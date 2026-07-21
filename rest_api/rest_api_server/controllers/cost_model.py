@@ -230,6 +230,10 @@ class SkuBasedCostModelController(CostModelController, MongoMixin):
     def related_cloud_type(self):
         return CloudTypes.DATABRICKS
 
+    @property
+    def related_cloud_types(self):
+        return {CloudTypes.DATABRICKS, CloudTypes.SNOWFLAKE}
+
     def _get_validation_map(self):
         return {}
 
@@ -244,7 +248,7 @@ class SkuBasedCostModelController(CostModelController, MongoMixin):
         if not cloud_acc:
             raise NotFoundException(
                 Err.OE0002, [CloudAccount.__name__, cloud_account_id])
-        if cloud_acc.type != self.related_cloud_type:
+        if cloud_acc.type not in self.related_cloud_types:
             raise WrongArgumentsException(Err.OE0436, [cloud_acc.type.value])
         return cloud_acc
 

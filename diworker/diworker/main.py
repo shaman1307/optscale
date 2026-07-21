@@ -207,8 +207,13 @@ class DIWorker(ConsumerMixin):
             importer = get_importer_class(cc_type, export_scheme)(
                 **importer_params)
             importer.import_report()
-            rest_cl.report_import_update(
-                report_import_id, {'state': 'completed'})
+            completed_payload = {'state': 'completed'}
+            get_details = getattr(importer, 'get_import_details', None)
+            if callable(get_details):
+                details = get_details()
+                if details:
+                    completed_payload['details'] = details
+            rest_cl.report_import_update(report_import_id, completed_payload)
             if start_last_import_ts == 0 and cc_type != ENVIRONMENT_CLOUD_TYPE:
                 all_reports_finished = True
                 _, resp = rest_cl.cloud_account_list(organization_id)

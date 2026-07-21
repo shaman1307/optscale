@@ -11,6 +11,7 @@ import {
   KUBERNETES_CNR,
   NEBIUS,
   DATABRICKS,
+  SNOWFLAKE,
   GCP_TENANT,
 } from "utils/constants";
 import { formatUTC } from "utils/datetime";
@@ -25,6 +26,7 @@ import {
   GcpProperties,
   K8sProperties,
   DatabricksProperties,
+  SnowflakeProperties,
 } from "./Properties";
 import { K8sPropertiesProps } from "./Properties/types";
 import type { ConfigMap, DataSourceDetailsProps, PropertiesMap } from "./types";
@@ -39,6 +41,7 @@ const propertiesMap: PropertiesMap = {
   [KUBERNETES_CNR]: K8sProperties,
   [NEBIUS]: NebiusProperties,
   [DATABRICKS]: DatabricksProperties,
+  [SNOWFLAKE]: SnowflakeProperties,
 };
 
 const renderHelpMap = (id: string, config: ConfigMap) => ({
@@ -51,6 +54,7 @@ const renderHelpMap = (id: string, config: ConfigMap) => ({
   [ALIBABA_CNR]: null,
   [NEBIUS]: null,
   [DATABRICKS]: null,
+  [SNOWFLAKE]: null,
 });
 
 const childrenListMap = (id: string) => ({
@@ -63,6 +67,7 @@ const childrenListMap = (id: string) => ({
   [ALIBABA_CNR]: null,
   [NEBIUS]: null,
   [DATABRICKS]: null,
+  [SNOWFLAKE]: null,
 });
 
 const DataSourceDetails = ({ id, accountId, parentId, type, createdAt, config = {} }: DataSourceDetailsProps) => {

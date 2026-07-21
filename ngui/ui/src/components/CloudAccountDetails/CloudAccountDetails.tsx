@@ -8,6 +8,7 @@ import { Link as RouterLink } from "react-router-dom";
 import ActionBar from "components/ActionBar";
 import AdvancedDataSourceDetails from "components/AdvancedDataSourceDetails";
 import DataSourceDetails from "components/DataSourceDetails";
+import DataSourceSnowflakePricing from "components/DataSourceSnowflakePricing";
 import PageContentWrapper from "components/PageContentWrapper";
 import {
   DisconnectCloudAccountModal,
@@ -35,6 +36,7 @@ import {
   ENVIRONMENT,
   AZURE_TENANT,
   DATABRICKS,
+  SNOWFLAKE,
   AZURE_CNR,
   GCP_CNR,
   ALIBABA_CNR,
@@ -44,7 +46,6 @@ import {
 import { summarizeChildrenDetails } from "utils/dataSources";
 import { SPACING_2 } from "utils/layouts";
 import { getPercentageChangeModule, round } from "utils/math";
-
 const {
   DETAILS: DETAILS_TAB,
   UPLOAD: UPLOAD_TAB,
@@ -66,7 +67,8 @@ const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoadi
       const hasPreviousImport = lastImportAt !== 0;
 
       const isEligibleForReimport =
-        (type === AWS_CNR && !config.linked) || [AZURE_CNR, GCP_CNR, ALIBABA_CNR, NEBIUS].includes(type);
+        (type === AWS_CNR && !config.linked) ||
+        [AZURE_CNR, GCP_CNR, ALIBABA_CNR, NEBIUS, SNOWFLAKE].includes(type);
 
       return {
         show: isEligibleForReimport,
@@ -295,6 +297,8 @@ const Tabs = ({
       dataTestId: "tab_advanced",
       node: !!id && (
         <AdvancedDataSourceDetails
+          dataSourceId={id}
+          dataSourceType={type}
           lastImportAt={lastImportAt}
           lastImportAttemptAt={lastImportAttemptAt}
           lastImportAttemptError={lastImportAttemptError}
@@ -321,8 +325,14 @@ const Tabs = ({
     {
       title: PRICING_TAB,
       dataTestId: "tab_pricing",
-      node: !!id && <DataSourceSkusContainer dataSourceId={id} costModel={config.cost_model} />,
-      renderCondition: () => type === DATABRICKS,
+      node:
+        !!id &&
+        (type === DATABRICKS ? (
+          <DataSourceSkusContainer dataSourceId={id} costModel={config.cost_model} />
+        ) : (
+          <DataSourceSnowflakePricing cloudAccountId={id} costModel={config.cost_model} />
+        )),
+      renderCondition: () => type === DATABRICKS || type === SNOWFLAKE,
     },
   ];
 

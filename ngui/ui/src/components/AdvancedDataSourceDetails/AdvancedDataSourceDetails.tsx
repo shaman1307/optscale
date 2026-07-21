@@ -3,6 +3,7 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import { Box, Grid } from "@mui/material";
 import { FormattedMessage } from "react-intl";
+import BillingImportDetails from "components/AdvancedDataSourceDetails/BillingImportDetails";
 import IconStatus from "components/IconStatus";
 import KeyValueLabel from "components/KeyValueLabel/KeyValueLabel";
 import SlicedText from "components/SlicedText";
@@ -14,6 +15,7 @@ import { discoveryStatus, lastTimeLocal, resourceType } from "utils/columns";
 import { DISCOVERY_STATUS } from "utils/columns/discoveryStatus";
 import { BILLING_IMPORT_STATUS, getBillingImportStatus } from "utils/dataSources";
 import { getTimeDistance } from "utils/datetime";
+import { SNOWFLAKE } from "utils/constants";
 
 const Discovery = ({ discoveryInfos }) => {
   const columns = useMemo(
@@ -85,13 +87,15 @@ const Status = ({ timestamp, attemptTimestamp, error }) => {
 };
 
 const AdvancedDataSourceDetails = ({
+  dataSourceId,
+  dataSourceType,
   lastImportAttemptAt,
   lastImportAt,
   lastImportAttemptError,
   lastMetricsRetrieval,
   lastMetricsRetrievalAttempt,
   lastGettingMetricAttemptError,
-  discoveryInfos,
+  discoveryInfos = [],
 }) => (
   <>
     <Box display="flex" flexWrap="wrap" rowGap={1} columnGap={16}>
@@ -207,6 +211,7 @@ const AdvancedDataSourceDetails = ({
         </Grid>
       )}
     </Box>
+    {dataSourceType === SNOWFLAKE && dataSourceId ? <BillingImportDetails dataSourceId={dataSourceId} /> : null}
   </>
 );
 

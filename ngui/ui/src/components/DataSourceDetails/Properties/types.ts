@@ -81,6 +81,15 @@ export type DatabricksPropertiesProps = BasePropertiesProps & {
   };
 };
 
+export type SnowflakePropertiesProps = BasePropertiesProps & {
+  config: {
+    account?: string;
+    user?: string;
+    role?: string;
+    warehouse?: string;
+  };
+};
+
 export type NebiusPropertiesProps = BasePropertiesProps & {
   config: {
     cloud_name: string;

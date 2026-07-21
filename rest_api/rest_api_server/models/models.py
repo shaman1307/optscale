@@ -36,7 +36,7 @@ from rest_api.rest_api_server.models.types import (
     ConstraintLimitState, OrganizationConstraintType, ConstraintDefinition,
     RunResult, BIOrganizationStatus, BIType, Float, GeminiStatus,
     HMTimeString, TimezoneString, PowerScheduleAction,
-    NullableMediumJSON, NullableMediumText
+    NullableMediumJSON, NullableMediumText, SerializableNullableJSON
 )
 
 
@@ -579,6 +579,8 @@ class ReportImport(Base, CreatedMixin, ImmutableMixin, ValidatorMixin):
                    nullable=False, info=ColumnPermissions.full)
     state_reason = Column(NullableText('state_reason'),
                           nullable=True, info=ColumnPermissions.full)
+    details = Column(SerializableNullableJSON('details'), nullable=True,
+                     info=ColumnPermissions.full)
     is_recalculation = Column(NullableBool('is_recalculation'), nullable=False,
                               default=False, info=ColumnPermissions.create_only)
     updated_at = Column(NullableInt('updated_at'), default=0, nullable=False,
@@ -599,6 +601,20 @@ class ReportImport(Base, CreatedMixin, ImmutableMixin, ValidatorMixin):
     @validates('state_reason')
     def _validate_state_reason(self, key, state_reason):
         return self.get_validator(key, state_reason)
+
+    @validates('details')
+    def _validate_details(self, key, details):
+        return self.get_validator(key, details)
+
+    def to_dict(self):
+        result = super().to_dict()
+        details = result.get('details')
+        if isinstance(details, str):
+            try:
+                result['details'] = json.loads(details) if details else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                result['details'] = None
+        return result
 
 
 class Invite(Base, CreatedMixin, MutableMixin, ValidatorMixin):

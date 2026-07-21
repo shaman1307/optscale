@@ -1,0 +1,7 @@
+services:
+  restapi:
+    image: hystax/rest_api:local
+  diworker:
+    image: hystax/diworker:local
+  ngui:
+    image: hystax/ngui:local

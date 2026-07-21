@@ -73,6 +73,18 @@ class RestApiClient extends BaseClient {
     return dataSource;
   }
 
+  async getReportImports(cloudAccountId: string, showCompleted = false) {
+    const path = `cloud_accounts/${cloudAccountId}/report_imports`;
+
+    const response = await this.get(path, {
+      params: getParams({
+        show_completed: showCompleted,
+      }),
+    });
+
+    return response.report_imports ?? [];
+  }
+
   async createDataSource(
     organizationId: MutationCreateDataSourceArgs["organizationId"],
     params: MutationCreateDataSourceArgs["params"]
@@ -94,6 +106,7 @@ class RestApiClient extends BaseClient {
           ...params.alibabaConfig,
           ...params.nebiusConfig,
           ...params.databricksConfig,
+          ...params.snowflakeConfig,
           ...params.k8sConfig,
         },
       },
@@ -124,6 +137,7 @@ class RestApiClient extends BaseClient {
           ...params.alibabaConfig,
           ...params.nebiusConfig,
           ...params.databricksConfig,
+          ...params.snowflakeConfig,
           ...params.k8sConfig,
         },
       }),

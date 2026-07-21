@@ -317,6 +317,7 @@ export type CreateDataSourceInput = {
   azureSubscriptionConfig?: InputMaybe<AzureSubscriptionConfigInput>;
   azureTenantConfig?: InputMaybe<AzureTenantConfigInput>;
   databricksConfig?: InputMaybe<DatabricksConfigInput>;
+  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   gcpConfig?: InputMaybe<GcpConfigInput>;
   gcpTenantConfig?: InputMaybe<GcpTenantConfigInput>;
   k8sConfig?: InputMaybe<K8sConfigInput>;
@@ -378,6 +379,7 @@ export type DataSourceType =
   | "azure_cnr"
   | "azure_tenant"
   | "databricks"
+  | "snowflake"
   | "environment"
   | "gcp_cnr"
   | "gcp_tenant"
@@ -388,6 +390,49 @@ export type DatabricksConfig = {
   __typename?: "DatabricksConfig";
   account_id?: Maybe<Scalars["String"]["output"]>;
   client_id?: Maybe<Scalars["String"]["output"]>;
+};
+
+
+export type SnowflakeConfig = {
+  __typename?: "SnowflakeConfig";
+  account?: Maybe<Scalars["String"]["output"]>;
+  cost_model?: Maybe<SnowflakeCostModelConfig>;
+  role?: Maybe<Scalars["String"]["output"]>;
+  user?: Maybe<Scalars["String"]["output"]>;
+  warehouse?: Maybe<Scalars["String"]["output"]>;
+};
+
+export type SnowflakeCostModelConfig = {
+  __typename?: "SnowflakeCostModelConfig";
+  credit_price?: Maybe<Scalars["Float"]["output"]>;
+  storage_price_per_tb_month?: Maybe<Scalars["Float"]["output"]>;
+};
+
+export type SnowflakeConfigInput = {
+  account: Scalars["String"]["input"];
+  cost_model?: InputMaybe<Scalars["JSONObject"]["input"]>;
+  private_key: Scalars["String"]["input"];
+  role?: InputMaybe<Scalars["String"]["input"]>;
+  user: Scalars["String"]["input"];
+  warehouse: Scalars["String"]["input"];
+};
+
+export type SnowflakeDataSource = DataSourceInterface & {
+  __typename?: "SnowflakeDataSource";
+  account_id: Scalars["String"]["output"];
+  config?: Maybe<SnowflakeConfig>;
+  created_at?: Maybe<Scalars["Int"]["output"]>;
+  details?: Maybe<DataSourceDetails>;
+  id: Scalars["String"]["output"];
+  last_getting_metric_attempt_at: Scalars["Int"]["output"];
+  last_getting_metric_attempt_error?: Maybe<Scalars["String"]["output"]>;
+  last_getting_metrics_at: Scalars["Int"]["output"];
+  last_import_at: Scalars["Int"]["output"];
+  last_import_attempt_at: Scalars["Int"]["output"];
+  last_import_attempt_error?: Maybe<Scalars["String"]["output"]>;
+  name: Scalars["String"]["output"];
+  parent_id?: Maybe<Scalars["String"]["output"]>;
+  type: DataSourceType;
 };
 
 export type DatabricksConfigInput = {
@@ -856,6 +901,7 @@ export type Query = {
   organizationThemeSettings?: Maybe<Scalars["JSONObject"]["output"]>;
   organizations: Array<Organization>;
   relevantFlavors?: Maybe<Scalars["JSONObject"]["output"]>;
+  reportImports: Array<ReportImport>;
   resourceCountBreakdown?: Maybe<ResourceCountBreakdown>;
 };
 
@@ -893,6 +939,11 @@ export type QueryDataSourceArgs = {
 
 export type QueryDataSourcesArgs = {
   organizationId: Scalars["ID"]["input"];
+};
+
+export type QueryReportImportsArgs = {
+  cloudAccountId: Scalars["ID"]["input"];
+  showCompleted?: InputMaybe<Scalars["Boolean"]["input"]>;
 };
 
 export type QueryEmployeeEmailsArgs = {
@@ -944,6 +995,20 @@ export type QueryRelevantFlavorsArgs = {
   requestParams?: InputMaybe<Scalars["JSONObject"]["input"]>;
 };
 
+export type ReportImport = {
+  __typename?: "ReportImport";
+  id: Scalars["String"]["output"];
+  cloud_account_id: Scalars["String"]["output"];
+  created_at: Scalars["Int"]["output"];
+  updated_at?: Maybe<Scalars["Int"]["output"]>;
+  deleted_at?: Maybe<Scalars["Int"]["output"]>;
+  import_file?: Maybe<Scalars["String"]["output"]>;
+  state: Scalars["String"]["output"];
+  state_reason?: Maybe<Scalars["String"]["output"]>;
+  is_recalculation?: Maybe<Scalars["Boolean"]["output"]>;
+  details?: Maybe<Scalars["JSONObject"]["output"]>;
+};
+
 export type QueryResourceCountBreakdownArgs = {
   organizationId: Scalars["ID"]["input"];
   params?: InputMaybe<BreakdownParams>;
@@ -987,6 +1052,7 @@ export type UpdateDataSourceInput = {
   azureSubscriptionConfig?: InputMaybe<AzureSubscriptionConfigInput>;
   azureTenantConfig?: InputMaybe<AzureTenantConfigInput>;
   databricksConfig?: InputMaybe<DatabricksConfigInput>;
+  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   gcpConfig?: InputMaybe<GcpConfigInput>;
   gcpTenantConfig?: InputMaybe<GcpTenantConfigInput>;
   k8sConfig?: InputMaybe<K8sConfigInput>;
@@ -1105,6 +1171,7 @@ export type ResolversInterfaceTypes<_RefType extends Record<string, unknown>> = 
     | AzureSubscriptionDataSource
     | AzureTenantDataSource
     | DatabricksDataSource
+    | SnowflakeDataSource
     | EnvironmentDataSource
     | GcpDataSource
     | GcpTenantDataSource
@@ -1147,6 +1214,10 @@ export type ResolversTypes = {
   DatabricksConfig: ResolverTypeWrapper<DatabricksConfig>;
   DatabricksConfigInput: DatabricksConfigInput;
   DatabricksDataSource: ResolverTypeWrapper<DatabricksDataSource>;
+  SnowflakeConfig: ResolverTypeWrapper<SnowflakeConfig>;
+  SnowflakeConfigInput: SnowflakeConfigInput;
+  SnowflakeCostModelConfig: ResolverTypeWrapper<SnowflakeCostModelConfig>;
+  SnowflakeDataSource: ResolverTypeWrapper<SnowflakeDataSource>;
   Employee: ResolverTypeWrapper<Employee>;
   EmployeeEmail: ResolverTypeWrapper<EmployeeEmail>;
   EnvironmentDataSource: ResolverTypeWrapper<EnvironmentDataSource>;
@@ -1166,6 +1237,7 @@ export type ResolversTypes = {
   GcpTenantPricingDataConfig: ResolverTypeWrapper<GcpTenantPricingDataConfig>;
   GeminiDataPreparation: ResolverTypeWrapper<GeminiDataPreparation>;
   GeminiDataPreparationStatus: GeminiDataPreparationStatus;
+  ReportImport: ResolverTypeWrapper<ReportImport>;
   ID: ResolverTypeWrapper<Scalars["ID"]["output"]>;
   Int: ResolverTypeWrapper<Scalars["Int"]["output"]>;
   Invitation: ResolverTypeWrapper<Invitation>;
@@ -1234,6 +1306,10 @@ export type ResolversParentTypes = {
   DatabricksConfig: DatabricksConfig;
   DatabricksConfigInput: DatabricksConfigInput;
   DatabricksDataSource: DatabricksDataSource;
+  SnowflakeConfig: SnowflakeConfig;
+  SnowflakeConfigInput: SnowflakeConfigInput;
+  SnowflakeCostModelConfig: SnowflakeCostModelConfig;
+  SnowflakeDataSource: SnowflakeDataSource;
   Employee: Employee;
   EmployeeEmail: EmployeeEmail;
   EnvironmentDataSource: EnvironmentDataSource;
@@ -1255,6 +1331,7 @@ export type ResolversParentTypes = {
   ID: Scalars["ID"]["output"];
   Int: Scalars["Int"]["output"];
   Invitation: Invitation;
+  ReportImport: ReportImport;
   InvitationAssignment: InvitationAssignment;
   JSONObject: Scalars["JSONObject"]["output"];
   K8CostModelConfig: K8CostModelConfig;
@@ -1483,6 +1560,7 @@ export type DataSourceInterfaceResolvers<
     | "AzureSubscriptionDataSource"
     | "AzureTenantDataSource"
     | "DatabricksDataSource"
+    | "SnowflakeDataSource"
     | "EnvironmentDataSource"
     | "GcpDataSource"
     | "GcpTenantDataSource"
@@ -1499,6 +1577,47 @@ export type DatabricksConfigResolvers<
 > = {
   account_id?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
   client_id?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+};
+
+
+export type SnowflakeConfigResolvers<
+  ContextType = ContextValue,
+  ParentType extends ResolversParentTypes["SnowflakeConfig"] = ResolversParentTypes["SnowflakeConfig"],
+> = {
+  account?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  cost_model?: Resolver<Maybe<ResolversTypes["SnowflakeCostModelConfig"]>, ParentType, ContextType>;
+  role?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  user?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  warehouse?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+};
+
+export type SnowflakeCostModelConfigResolvers<
+  ContextType = ContextValue,
+  ParentType extends ResolversParentTypes["SnowflakeCostModelConfig"] = ResolversParentTypes["SnowflakeCostModelConfig"],
+> = {
+  credit_price?: Resolver<Maybe<ResolversTypes["Float"]>, ParentType, ContextType>;
+  storage_price_per_tb_month?: Resolver<Maybe<ResolversTypes["Float"]>, ParentType, ContextType>;
+};
+
+export type SnowflakeDataSourceResolvers<
+  ContextType = ContextValue,
+  ParentType extends ResolversParentTypes["SnowflakeDataSource"] = ResolversParentTypes["SnowflakeDataSource"],
+> = {
+  account_id?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  config?: Resolver<Maybe<ResolversTypes["SnowflakeConfig"]>, ParentType, ContextType>;
+  created_at?: Resolver<Maybe<ResolversTypes["Int"]>, ParentType, ContextType>;
+  details?: Resolver<Maybe<ResolversTypes["DataSourceDetails"]>, ParentType, ContextType>;
+  id?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  last_getting_metric_attempt_at?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  last_getting_metric_attempt_error?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  last_getting_metrics_at?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  last_import_at?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  last_import_attempt_at?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  last_import_attempt_error?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  name?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  parent_id?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  type?: Resolver<ResolversTypes["DataSourceType"], ParentType, ContextType>;
+  __isTypeOf?: IsTypeOfResolverFn<ParentType, ContextType>;
 };
 
 export type DatabricksDataSourceResolvers<
@@ -2000,6 +2119,12 @@ export type QueryResolvers<
     ContextType,
     RequireFields<QueryDataSourcesArgs, "organizationId">
   >;
+  reportImports?: Resolver<
+    Array<ResolversTypes["ReportImport"]>,
+    ParentType,
+    ContextType,
+    RequireFields<QueryReportImportsArgs, "cloudAccountId">
+  >;
   employeeEmails?: Resolver<
     Maybe<Array<Maybe<ResolversTypes["EmployeeEmail"]>>>,
     ParentType,
@@ -2076,6 +2201,23 @@ export type QueryResolvers<
   >;
 };
 
+export type ReportImportResolvers<
+  ContextType = ContextValue,
+  ParentType extends ResolversParentTypes["ReportImport"] = ResolversParentTypes["ReportImport"],
+> = {
+  id?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  cloud_account_id?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  created_at?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  updated_at?: Resolver<Maybe<ResolversTypes["Int"]>, ParentType, ContextType>;
+  deleted_at?: Resolver<Maybe<ResolversTypes["Int"]>, ParentType, ContextType>;
+  import_file?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  state?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  state_reason?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  is_recalculation?: Resolver<Maybe<ResolversTypes["Boolean"]>, ParentType, ContextType>;
+  details?: Resolver<Maybe<ResolversTypes["JSONObject"]>, ParentType, ContextType>;
+  __isTypeOf?: IsTypeOfResolverFn<ParentType, ContextType>;
+};
+
 export type ResourceCountBreakdownResolvers<
   ContextType = ContextValue,
   ParentType extends ResolversParentTypes["ResourceCountBreakdown"] = ResolversParentTypes["ResourceCountBreakdown"],
@@ -2122,6 +2264,9 @@ export type Resolvers<ContextType = ContextValue> = {
   DataSourceInterface?: DataSourceInterfaceResolvers<ContextType>;
   DatabricksConfig?: DatabricksConfigResolvers<ContextType>;
   DatabricksDataSource?: DatabricksDataSourceResolvers<ContextType>;
+  SnowflakeConfig?: SnowflakeConfigResolvers<ContextType>;
+  SnowflakeCostModelConfig?: SnowflakeCostModelConfigResolvers<ContextType>;
+  SnowflakeDataSource?: SnowflakeDataSourceResolvers<ContextType>;
   Employee?: EmployeeResolvers<ContextType>;
   EmployeeEmail?: EmployeeEmailResolvers<ContextType>;
   EnvironmentDataSource?: EnvironmentDataSourceResolvers<ContextType>;
@@ -2151,6 +2296,7 @@ export type Resolvers<ContextType = ContextValue> = {
   OrganizationSummary?: OrganizationSummaryResolvers<ContextType>;
   OrganizationSummaryEntities?: OrganizationSummaryEntitiesResolvers<ContextType>;
   Query?: QueryResolvers<ContextType>;
+  ReportImport?: ReportImportResolvers<ContextType>;
   ResourceCountBreakdown?: ResourceCountBreakdownResolvers<ContextType>;
   ScheduleGeminiDataPreparation?: ScheduleGeminiDataPreparationResolvers<ContextType>;
   StripeSession?: StripeSessionResolvers<ContextType>;

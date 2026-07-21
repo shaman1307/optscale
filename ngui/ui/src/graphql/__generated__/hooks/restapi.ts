@@ -317,6 +317,7 @@ export type CreateDataSourceInput = {
   azureSubscriptionConfig?: InputMaybe<AzureSubscriptionConfigInput>;
   azureTenantConfig?: InputMaybe<AzureTenantConfigInput>;
   databricksConfig?: InputMaybe<DatabricksConfigInput>;
+  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   gcpConfig?: InputMaybe<GcpConfigInput>;
   gcpTenantConfig?: InputMaybe<GcpTenantConfigInput>;
   k8sConfig?: InputMaybe<K8sConfigInput>;
@@ -378,6 +379,7 @@ export type DataSourceType =
   | "azure_cnr"
   | "azure_tenant"
   | "databricks"
+  | "snowflake"
   | "environment"
   | "gcp_cnr"
   | "gcp_tenant"
@@ -388,6 +390,49 @@ export type DatabricksConfig = {
   __typename?: "DatabricksConfig";
   account_id?: Maybe<Scalars["String"]["output"]>;
   client_id?: Maybe<Scalars["String"]["output"]>;
+};
+
+
+export type SnowflakeConfig = {
+  __typename?: "SnowflakeConfig";
+  account?: Maybe<Scalars["String"]["output"]>;
+  cost_model?: Maybe<SnowflakeCostModelConfig>;
+  role?: Maybe<Scalars["String"]["output"]>;
+  user?: Maybe<Scalars["String"]["output"]>;
+  warehouse?: Maybe<Scalars["String"]["output"]>;
+};
+
+export type SnowflakeCostModelConfig = {
+  __typename?: "SnowflakeCostModelConfig";
+  credit_price?: Maybe<Scalars["Float"]["output"]>;
+  storage_price_per_tb_month?: Maybe<Scalars["Float"]["output"]>;
+};
+
+export type SnowflakeConfigInput = {
+  account: Scalars["String"]["input"];
+  cost_model?: InputMaybe<Scalars["JSONObject"]["input"]>;
+  private_key: Scalars["String"]["input"];
+  role?: InputMaybe<Scalars["String"]["input"]>;
+  user: Scalars["String"]["input"];
+  warehouse: Scalars["String"]["input"];
+};
+
+export type SnowflakeDataSource = DataSourceInterface & {
+  __typename?: "SnowflakeDataSource";
+  account_id: Scalars["String"]["output"];
+  config?: Maybe<SnowflakeConfig>;
+  created_at?: Maybe<Scalars["Int"]["output"]>;
+  details?: Maybe<DataSourceDetails>;
+  id: Scalars["String"]["output"];
+  last_getting_metric_attempt_at: Scalars["Int"]["output"];
+  last_getting_metric_attempt_error?: Maybe<Scalars["String"]["output"]>;
+  last_getting_metrics_at: Scalars["Int"]["output"];
+  last_import_at: Scalars["Int"]["output"];
+  last_import_attempt_at: Scalars["Int"]["output"];
+  last_import_attempt_error?: Maybe<Scalars["String"]["output"]>;
+  name: Scalars["String"]["output"];
+  parent_id?: Maybe<Scalars["String"]["output"]>;
+  type: DataSourceType;
 };
 
 export type DatabricksConfigInput = {
@@ -987,6 +1032,7 @@ export type UpdateDataSourceInput = {
   azureSubscriptionConfig?: InputMaybe<AzureSubscriptionConfigInput>;
   azureTenantConfig?: InputMaybe<AzureTenantConfigInput>;
   databricksConfig?: InputMaybe<DatabricksConfigInput>;
+  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   gcpConfig?: InputMaybe<GcpConfigInput>;
   gcpTenantConfig?: InputMaybe<GcpTenantConfigInput>;
   k8sConfig?: InputMaybe<K8sConfigInput>;
@@ -2489,6 +2535,20 @@ export const DatabricksDataSourceConfigFragmentFragmentDoc = gql`
     }
   }
 `;
+export const SnowflakeDataSourceConfigFragmentFragmentDoc = gql`
+  fragment SnowflakeDataSourceConfigFragment on SnowflakeDataSource {
+    config {
+      account
+      user
+      role
+      warehouse
+      cost_model {
+        credit_price
+        storage_price_per_tb_month
+      }
+    }
+  }
+`;
 export const K8sDataSourceConfigFragmentFragmentDoc = gql`
   fragment K8sDataSourceConfigFragment on K8sDataSource {
     config {
@@ -2781,6 +2841,7 @@ export const DataSourcesDocument = gql`
       ...AlibabaDataSourceConfigFragment
       ...NebiusDataSourceConfigFragment
       ...DatabricksDataSourceConfigFragment
+      ...SnowflakeDataSourceConfigFragment
       ...K8sDataSourceConfigFragment
     }
   }
@@ -2792,6 +2853,7 @@ export const DataSourcesDocument = gql`
   ${AlibabaDataSourceConfigFragmentFragmentDoc}
   ${NebiusDataSourceConfigFragmentFragmentDoc}
   ${DatabricksDataSourceConfigFragmentFragmentDoc}
+  ${SnowflakeDataSourceConfigFragmentFragmentDoc}
   ${K8sDataSourceConfigFragmentFragmentDoc}
 `;
 
@@ -2885,6 +2947,7 @@ export const DataSourceDocument = gql`
       ...AlibabaDataSourceConfigFragment
       ...NebiusDataSourceConfigFragment
       ...DatabricksDataSourceConfigFragment
+      ...SnowflakeDataSourceConfigFragment
       ...K8sDataSourceConfigFragment
     }
   }
@@ -2896,6 +2959,7 @@ export const DataSourceDocument = gql`
   ${AlibabaDataSourceConfigFragmentFragmentDoc}
   ${NebiusDataSourceConfigFragmentFragmentDoc}
   ${DatabricksDataSourceConfigFragmentFragmentDoc}
+  ${SnowflakeDataSourceConfigFragmentFragmentDoc}
   ${K8sDataSourceConfigFragmentFragmentDoc}
 `;
 
@@ -2947,6 +3011,65 @@ export type DataSourceQueryResult = Apollo.QueryResult<DataSourceQuery, DataSour
 export function refetchDataSourceQuery(variables: DataSourceQueryVariables) {
   return { query: DataSourceDocument, variables: variables };
 }
+
+export type ReportImportsQueryVariables = Exact<{
+  cloudAccountId: Scalars["ID"]["input"];
+  showCompleted?: InputMaybe<Scalars["Boolean"]["input"]>;
+}>;
+
+export type ReportImportsQuery = {
+  __typename?: "Query";
+  reportImports: Array<{
+    __typename?: "ReportImport";
+    id: string;
+    cloud_account_id: string;
+    created_at: number;
+    updated_at?: number | null;
+    state: string;
+    state_reason?: string | null;
+    is_recalculation?: boolean | null;
+    details?: Record<string, unknown> | null;
+  }>;
+};
+
+export const ReportImportsDocument = gql`
+  query ReportImports($cloudAccountId: ID!, $showCompleted: Boolean) {
+    reportImports(cloudAccountId: $cloudAccountId, showCompleted: $showCompleted) {
+      id
+      cloud_account_id
+      created_at
+      updated_at
+      state
+      state_reason
+      is_recalculation
+      details
+    }
+  }
+`;
+
+/**
+ * __useReportImportsQuery__
+ */
+export function useReportImportsQuery(
+  baseOptions: Apollo.QueryHookOptions<ReportImportsQuery, ReportImportsQueryVariables> &
+    ({ variables: ReportImportsQueryVariables; skip?: boolean } | { skip: boolean })
+) {
+  const options = { ...defaultOptions, ...baseOptions };
+  return Apollo.useQuery<ReportImportsQuery, ReportImportsQueryVariables>(ReportImportsDocument, options);
+}
+export function useReportImportsLazyQuery(
+  baseOptions?: Apollo.LazyQueryHookOptions<ReportImportsQuery, ReportImportsQueryVariables>
+) {
+  const options = { ...defaultOptions, ...baseOptions };
+  return Apollo.useLazyQuery<ReportImportsQuery, ReportImportsQueryVariables>(ReportImportsDocument, options);
+}
+export type ReportImportsQueryHookResult = ReturnType<typeof useReportImportsQuery>;
+export type ReportImportsLazyQueryHookResult = ReturnType<typeof useReportImportsLazyQuery>;
+export type ReportImportsQueryResult = Apollo.QueryResult<ReportImportsQuery, ReportImportsQueryVariables>;
+export function refetchReportImportsQuery(variables: ReportImportsQueryVariables) {
+  return { query: ReportImportsDocument, variables: variables };
+}
+
 export const InvitationsDocument = gql`
   query Invitations {
     invitations {
@@ -3773,6 +3896,7 @@ export const UpdateDataSourceDocument = gql`
       ...AlibabaDataSourceConfigFragment
       ...NebiusDataSourceConfigFragment
       ...DatabricksDataSourceConfigFragment
+      ...SnowflakeDataSourceConfigFragment
       ...K8sDataSourceConfigFragment
     }
   }
@@ -3783,6 +3907,7 @@ export const UpdateDataSourceDocument = gql`
   ${AlibabaDataSourceConfigFragmentFragmentDoc}
   ${NebiusDataSourceConfigFragmentFragmentDoc}
   ${DatabricksDataSourceConfigFragmentFragmentDoc}
+  ${SnowflakeDataSourceConfigFragmentFragmentDoc}
   ${K8sDataSourceConfigFragmentFragmentDoc}
 `;
 export type UpdateDataSourceMutationFn = Apollo.MutationFunction<UpdateDataSourceMutation, UpdateDataSourceMutationVariables>;

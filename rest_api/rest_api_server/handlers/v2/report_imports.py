@@ -79,6 +79,11 @@ class ReportImportAsyncCollectionHandler(BaseAsyncCollectionHandler,
                                     state_reason:
                                         type: string
                                         description: "Description of the state"
+                                    details:
+                                        type: object
+                                        description: >
+                                            Optional import details (collector
+                                            stats, reconciliation, warnings)
             400:
                 description: |
                     Wrong arguments:
@@ -165,6 +170,11 @@ class ReportImportAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
                         state_reason:
                             type: string
                             description: "Description of the state"
+                        details:
+                            type: object
+                            description: >
+                                Optional import details (collector stats,
+                                reconciliation, warnings)
             401:
                 description: |
                     Unauthorized:
@@ -218,6 +228,11 @@ class ReportImportAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
                         type: string
                         description: >
                             Reasoning for the current state, e.g. why failed
+                    details:
+                        type: object
+                        description: >
+                            Optional import details (collector stats,
+                            reconciliation, warnings)
         responses:
             200:
                 description: Success (returns modified object)
@@ -225,6 +240,7 @@ class ReportImportAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
                 description: |
                     Wrong arguments:
                     - OE0214: Should be a string
+                    - OE0219: Invalid details
             401:
                 description: |
                     Unauthorized:

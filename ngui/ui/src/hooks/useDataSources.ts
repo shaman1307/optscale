@@ -3,6 +3,7 @@ import alibabaLogo from "assets/clouds/alibaba.svg";
 import awsLogo from "assets/clouds/aws.svg";
 import azureLogo from "assets/clouds/azure.svg";
 import databricksLogo from "assets/clouds/databricks.svg";
+import snowflakeLogo from "assets/clouds/snowflake.svg";
 import gcpLogo from "assets/clouds/gcp.svg";
 import k8sLogo from "assets/clouds/k8s.svg";
 import nebiusLogo from "assets/clouds/nebius.svg";
@@ -10,6 +11,7 @@ import AlibabaLogoIcon from "icons/AlibabaLogoIcon";
 import AwsLogoIcon from "icons/AwsLogoIcon";
 import AzureLogoIcon from "icons/AzureLogoIcon";
 import DatabricksLogoIcon from "icons/DatabricksLogoIcon";
+import SnowflakeLogoIcon from "icons/SnowflakeLogoIcon";
 import GcpLogoIcon from "icons/GcpLogoIcon";
 import K8sLogoIcon from "icons/K8sLogoIcon";
 import NebiusLogoIcon from "icons/NebiusLogoIcon";
@@ -18,6 +20,7 @@ import {
   AZURE_CNR,
   AZURE_TENANT,
   DATABRICKS,
+  SNOWFLAKE,
   KUBERNETES_CNR,
   ALIBABA_CNR,
   ENVIRONMENT,
@@ -52,6 +55,12 @@ export const getSettings = (type) =>
       logo: databricksLogo,
       disconnectQuestionId: "disconnectDatabricksQuestion",
       cloudTypeMessageId: CLOUD_ACCOUNT_TYPE[DATABRICKS],
+    },
+    [SNOWFLAKE]: {
+      icon: SnowflakeLogoIcon,
+      logo: snowflakeLogo,
+      disconnectQuestionId: "disconnectSnowflakeQuestion",
+      cloudTypeMessageId: CLOUD_ACCOUNT_TYPE[SNOWFLAKE],
     },
     [KUBERNETES_CNR]: {
       icon: K8sLogoIcon,

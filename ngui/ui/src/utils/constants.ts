@@ -53,6 +53,7 @@ export const AWS_CNR = "aws_cnr";
 export const AZURE_CNR = "azure_cnr";
 export const AZURE_TENANT = "azure_tenant";
 export const DATABRICKS = "databricks";
+export const SNOWFLAKE = "snowflake";
 export const GCP_CNR = "gcp_cnr";
 export const GCP_TENANT = "gcp_tenant";
 export const ALIBABA_CNR = "alibaba_cnr";
@@ -67,6 +68,7 @@ export const CLOUD_PROVIDERS = Object.freeze({
   ALIBABA: "alibaba",
   NEBIUS: "nebius",
   DATABRICKS: "databricks",
+  SNOWFLAKE: "snowflake",
   KUBERNETES: "kubernetes",
 });
 
@@ -80,6 +82,7 @@ export const CONNECTION_TYPES = Object.freeze({
   GCP_TENANT: "gcpTenant",
   NEBIUS: "nebius",
   DATABRICKS: "databricks",
+  SNOWFLAKE: "snowflake",
   KUBERNETES: "kubernetes",
 });
 
@@ -92,6 +95,7 @@ export const CLOUD_ACCOUNT_TYPE = Object.freeze({
   [AZURE_CNR]: "azureSubscription",
   [AZURE_TENANT]: "azureTenant",
   [DATABRICKS]: "databricks",
+  [SNOWFLAKE]: "snowflake",
   [ALIBABA_CNR]: "alibabaCloud",
   [GCP_CNR]: "gcpProject",
   [GCP_TENANT]: "gcpTenant",
@@ -520,6 +524,7 @@ export const METRIC_TYPES = Object.freeze({
 export const COST_MODEL_TYPES = Object.freeze({
   K8S: "k8s",
   ENVIRONMENT: "environment",
+  SNOWFLAKE: "snowflake",
 });
 
 export const OPTSCALE_RESOURCE_TYPES = Object.freeze({

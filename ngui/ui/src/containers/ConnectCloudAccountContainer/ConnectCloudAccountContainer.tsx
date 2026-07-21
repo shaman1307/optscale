@@ -12,6 +12,7 @@ import {
   AZURE_CNR,
   AZURE_TENANT,
   DATABRICKS,
+  SNOWFLAKE,
   GCP_CNR,
   GCP_TENANT,
   KUBERNETES_CNR,
@@ -52,6 +53,7 @@ const ConnectCloudAccountContainer = () => {
       [ALIBABA_CNR]: "alibabaConfig",
       [NEBIUS]: "nebiusConfig",
       [DATABRICKS]: "databricksConfig",
+      [SNOWFLAKE]: "snowflakeConfig",
       [KUBERNETES_CNR]: "k8sConfig",
     }[type];
 

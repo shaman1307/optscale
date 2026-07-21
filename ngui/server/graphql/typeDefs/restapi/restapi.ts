@@ -13,6 +13,7 @@ export default gql`
     alibaba_cnr
     nebius
     databricks
+    snowflake
     kubernetes_cnr
     environment
   }
@@ -281,6 +282,37 @@ export default gql`
     config: DatabricksConfig
   }
 
+  # Snowflake data source
+  type SnowflakeCostModelConfig {
+    credit_price: Float
+    storage_price_per_tb_month: Float
+  }
+
+  type SnowflakeConfig {
+    account: String
+    user: String
+    role: String
+    warehouse: String
+    cost_model: SnowflakeCostModelConfig
+  }
+
+  type SnowflakeDataSource implements DataSourceInterface {
+    id: String!
+    created_at: Int
+    name: String!
+    type: DataSourceType!
+    parent_id: String
+    account_id: String!
+    last_import_at: Int!
+    last_import_attempt_at: Int!
+    last_import_attempt_error: String
+    last_getting_metrics_at: Int!
+    last_getting_metric_attempt_at: Int!
+    last_getting_metric_attempt_error: String
+    details: DataSourceDetails
+    config: SnowflakeConfig
+  }
+
   # K8s data source
   type K8CostModelConfig {
     cpu_hourly_cost: Float!
@@ -432,6 +464,15 @@ export default gql`
     client_secret: String!
   }
 
+  input SnowflakeConfigInput {
+    account: String!
+    user: String!
+    private_key: String!
+    warehouse: String!
+    role: String
+    cost_model: JSONObject
+  }
+
   input CreateDataSourceInput {
     name: String
     type: String
@@ -445,6 +486,7 @@ export default gql`
     alibabaConfig: AlibabaConfigInput
     nebiusConfig: NebiusConfigInput
     databricksConfig: DatabricksConfigInput
+    snowflakeConfig: SnowflakeConfigInput
     k8sConfig: K8sConfigInput
   }
 
@@ -462,6 +504,7 @@ export default gql`
     alibabaConfig: AlibabaConfigInput
     nebiusConfig: NebiusConfigInput
     databricksConfig: DatabricksConfigInput
+    snowflakeConfig: SnowflakeConfigInput
     k8sConfig: K8sConfigInput
   }
 
@@ -789,11 +832,25 @@ export default gql`
     id: ID!
   }
 
+  type ReportImport {
+    id: String!
+    cloud_account_id: String!
+    created_at: Int!
+    updated_at: Int
+    deleted_at: Int
+    import_file: String
+    state: String!
+    state_reason: String
+    is_recalculation: Boolean
+    details: JSONObject
+  }
+
   type Query {
     organizations: [Organization!]!
     currentEmployee(organizationId: ID!): Employee
     dataSources(organizationId: ID!): [DataSourceInterface]
     dataSource(dataSourceId: ID!, requestParams: DataSourceRequestParams): DataSourceInterface
+    reportImports(cloudAccountId: ID!, showCompleted: Boolean): [ReportImport!]!
     employeeEmails(employeeId: ID!): [EmployeeEmail]
     invitations: [Invitation]
     organizationFeatures(organizationId: ID!): JSONObject

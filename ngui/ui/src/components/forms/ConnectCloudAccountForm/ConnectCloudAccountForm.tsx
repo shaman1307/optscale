@@ -20,6 +20,7 @@ import {
   AZURE_SUBSCRIPTION_CREDENTIALS_FIELD_NAMES,
   AZURE_TENANT_CREDENTIALS_FIELD_NAMES,
   DATABRICKS_CREDENTIALS_FIELD_NAMES,
+  SNOWFLAKE_CREDENTIALS_FIELD_NAMES,
   GCP_CREDENTIALS_FIELD_NAMES,
   GCP_TENANT_CREDENTIALS_FIELD_NAMES,
   KUBERNETES_CREDENTIALS_FIELD_NAMES,
@@ -32,6 +33,7 @@ import AlibabaLogoIcon from "icons/AlibabaLogoIcon";
 import AwsLogoIcon from "icons/AwsLogoIcon";
 import AzureLogoIcon from "icons/AzureLogoIcon";
 import DatabricksLogoIcon from "icons/DatabricksLogoIcon";
+import SnowflakeLogoIcon from "icons/SnowflakeLogoIcon";
 import GcpLogoIcon from "icons/GcpLogoIcon";
 import K8sLogoIcon from "icons/K8sLogoIcon";
 import NebiusLogoIcon from "icons/NebiusLogoIcon";
@@ -55,6 +57,7 @@ import {
   CLOUD_PROVIDERS,
   CONNECTION_TYPES,
   DATABRICKS,
+  SNOWFLAKE,
   GCP_CNR,
   GCP_TENANT,
   KUBERNETES_CNR,
@@ -90,6 +93,7 @@ type CloudType =
   | typeof ALIBABA_CNR
   | typeof NEBIUS
   | typeof DATABRICKS
+  | typeof SNOWFLAKE
   | typeof KUBERNETES_CNR;
 
 type CloudProviderTypes = Record<
@@ -121,6 +125,7 @@ const CLOUD_PROVIDER_TYPES: CloudProviderTypes = {
   [CLOUD_PROVIDERS.ALIBABA]: { connectionType: CONNECTION_TYPES.ALIBABA, cloudType: ALIBABA_CNR },
   [CLOUD_PROVIDERS.NEBIUS]: { connectionType: CONNECTION_TYPES.NEBIUS, cloudType: NEBIUS },
   [CLOUD_PROVIDERS.DATABRICKS]: { connectionType: CONNECTION_TYPES.DATABRICKS, cloudType: DATABRICKS },
+  [CLOUD_PROVIDERS.SNOWFLAKE]: { connectionType: CONNECTION_TYPES.SNOWFLAKE, cloudType: SNOWFLAKE },
   [CLOUD_PROVIDERS.KUBERNETES]: { connectionType: CONNECTION_TYPES.KUBERNETES, cloudType: KUBERNETES_CNR },
 };
 
@@ -339,6 +344,19 @@ const getDatabricksParameters = (formData: FieldValues) => ({
   },
 });
 
+const getSnowflakeParameters = (formData: FieldValues) => ({
+  name: formData[DATA_SOURCE_NAME_FIELD_NAME],
+  type: SNOWFLAKE,
+  config: {
+    account: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT],
+    user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
+    private_key: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY],
+    warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
+    role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
+    cost_model: { credit_price: 0, storage_price_per_tb_month: 23 },
+  },
+});
+
 const renderConnectionTypeDescription = (settings) =>
   settings.map(({ key, messageId, values }, index) => (
     <Typography key={key} style={{ marginBottom: index !== settings.length - 1 ? "1rem" : "" }}>
@@ -468,6 +486,12 @@ const renderConnectionTypeInfoMessage = (connectionType: ConnectionType, authent
         },
       },
     ]),
+    [CONNECTION_TYPES.SNOWFLAKE]: renderConnectionTypeDescription([
+      {
+        key: "createSnowflakeDocumentationReference",
+        messageId: "createSnowflakeDocumentationReference",
+      },
+    ]),
     [CONNECTION_TYPES.NEBIUS]: null,
   })[connectionType];
 
@@ -561,6 +585,14 @@ const ConnectCloudAccountForm = ({ onSubmit, onCancel, isLoading = false, showCa
       messageId: "databricks",
       dataTestId: "btn_databricks_account",
       action: () => setConnectionType(CONNECTION_TYPES.DATABRICKS),
+      capability: OPTSCALE_CAPABILITY.FINOPS,
+    },
+    {
+      id: CLOUD_PROVIDERS.SNOWFLAKE,
+      icon: SnowflakeLogoIcon,
+      messageId: "snowflake",
+      dataTestId: "btn_snowflake_account",
+      action: () => setConnectionType(CONNECTION_TYPES.SNOWFLAKE),
       capability: OPTSCALE_CAPABILITY.FINOPS,
     },
     {
@@ -659,6 +691,7 @@ const ConnectCloudAccountForm = ({ onSubmit, onCancel, isLoading = false, showCa
                       [NEBIUS]: getNebiusParameters,
                       [KUBERNETES_CNR]: getKubernetesParameters,
                       [DATABRICKS]: getDatabricksParameters,
+                      [SNOWFLAKE]: getSnowflakeParameters,
                     }[cloudType];
 
                     onSubmit(await getParameters(formData));

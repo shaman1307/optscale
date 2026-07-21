@@ -87,6 +87,19 @@ fragment DatabricksDataSourceConfigFragment on DatabricksDataSource {
   }
 }
 
+fragment SnowflakeDataSourceConfigFragment on SnowflakeDataSource {
+  config {
+    account
+    user
+    role
+    warehouse
+    cost_model {
+      credit_price
+      storage_price_per_tb_month
+    }
+  }
+}
+
 fragment K8sDataSourceConfigFragment on K8sDataSource {
   config {
     cost_model {
@@ -164,6 +177,7 @@ query DataSources($organizationId: ID!) {
     ...AlibabaDataSourceConfigFragment
     ...NebiusDataSourceConfigFragment
     ...DatabricksDataSourceConfigFragment
+    ...SnowflakeDataSourceConfigFragment
     ...K8sDataSourceConfigFragment
   }
 }
@@ -208,7 +222,21 @@ query DataSource($dataSourceId: ID!, $requestParams: DataSourceRequestParams) {
     ...AlibabaDataSourceConfigFragment
     ...NebiusDataSourceConfigFragment
     ...DatabricksDataSourceConfigFragment
+    ...SnowflakeDataSourceConfigFragment
     ...K8sDataSourceConfigFragment
+  }
+}
+
+query ReportImports($cloudAccountId: ID!, $showCompleted: Boolean) {
+  reportImports(cloudAccountId: $cloudAccountId, showCompleted: $showCompleted) {
+    id
+    cloud_account_id
+    created_at
+    updated_at
+    state
+    state_reason
+    is_recalculation
+    details
   }
 }
 
@@ -329,6 +357,7 @@ mutation UpdateDataSource($dataSourceId: ID!, $params: UpdateDataSourceInput!) {
     ...AlibabaDataSourceConfigFragment
     ...NebiusDataSourceConfigFragment
     ...DatabricksDataSourceConfigFragment
+    ...SnowflakeDataSourceConfigFragment
     ...K8sDataSourceConfigFragment
   }
 }

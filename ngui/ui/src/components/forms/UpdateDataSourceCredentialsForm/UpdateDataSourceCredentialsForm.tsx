@@ -10,6 +10,7 @@ import {
   GCP_CREDENTIALS_FIELD_NAMES,
   GCP_TENANT_CREDENTIALS_FIELD_NAMES,
   DATABRICKS_CREDENTIALS_FIELD_NAMES,
+  SNOWFLAKE_CREDENTIALS_FIELD_NAMES,
   KUBERNETES_CREDENTIALS_FIELD_NAMES,
   AWS_LINKED_CREDENTIALS_FIELD_NAMES,
   AWS_ROOT_CREDENTIALS_FIELD_NAMES,
@@ -43,6 +44,7 @@ import {
   NEBIUS,
   GCP_CNR,
   DATABRICKS,
+  SNOWFLAKE,
   KUBERNETES_CNR,
   AWS_ROOT_CONNECT_CUR_VERSION,
   GCP_TENANT,
@@ -187,6 +189,12 @@ const Description = ({ type, config }) => {
               strong: (chunks) => <strong>{chunks}</strong>,
             }}
           />
+        </Typography>
+      );
+    case SNOWFLAKE:
+      return (
+        <Typography gutterBottom>
+          <FormattedMessage id="createSnowflakeDocumentationReference" />
         </Typography>
       );
     case KUBERNETES_CNR:
@@ -429,6 +437,25 @@ const getConfig = (type, config) => {
             account_id: formData[DATABRICKS_CREDENTIALS_FIELD_NAMES.ACCOUNT_ID],
             client_id: formData[DATABRICKS_CREDENTIALS_FIELD_NAMES.CLIENT_ID],
             client_secret: formData[DATABRICKS_CREDENTIALS_FIELD_NAMES.CLIENT_SECRET],
+          },
+        }),
+      };
+    case SNOWFLAKE:
+      return {
+        getDefaultFormValues: () => ({
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT]: config.account,
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER]: config.user,
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY]: "",
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE]: config.warehouse,
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE]: config.role || "ACCOUNTADMIN",
+        }),
+        parseFormDataToApiParams: (formData) => ({
+          config: {
+            account: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT],
+            user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
+            private_key: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY],
+            warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
+            role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
           },
         }),
       };

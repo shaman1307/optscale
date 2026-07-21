@@ -66,6 +66,7 @@ import ShareSettingsModal from "./ShareSettingsModal";
 import SlackIntegrationModal from "./SlackIntegrationModal";
 import UnmarkEnvironmentModal from "./UnmarkEnvironmentModal";
 import UpdateCostModelModal from "./UpdateCostModelModal";
+import UpdateSnowflakeCostModelModal from "./UpdateSnowflakeCostModelModal";
 import UpdateDataSourceCredentialsModal from "./UpdateDataSourceCredentialsModal";
 import UpdateDataSourceSkuModal from "./UpdateDataSourceSkuModal";
 
@@ -84,6 +85,7 @@ export {
   SlackIntegrationModal,
   DisconnectCloudAccountModal,
   UpdateCostModelModal,
+  UpdateSnowflakeCostModelModal,
   DeletePoolModal,
   ShareSettingsModal,
   BookEnvironmentModal,

@@ -365,7 +365,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         self.session.add(ca_obj)
         c_type_ctrl_map = {
             CloudTypes.KUBERNETES_CNR: CloudBasedCostModelController,
-            CloudTypes.DATABRICKS: SkuBasedCostModelController
+            CloudTypes.DATABRICKS: SkuBasedCostModelController,
+            CloudTypes.SNOWFLAKE: SkuBasedCostModelController,
         }
         ctrl = c_type_ctrl_map.get(ca_obj.type)
         if ctrl:
@@ -512,7 +513,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         config_changed = False
         c_type_ctrl_map = {
             CloudTypes.KUBERNETES_CNR: CloudBasedCostModelController,
-            CloudTypes.DATABRICKS: SkuBasedCostModelController
+            CloudTypes.DATABRICKS: SkuBasedCostModelController,
+            CloudTypes.SNOWFLAKE: SkuBasedCostModelController,
         }
         cost_model_controller = c_type_ctrl_map.get(
             cloud_acc_obj.type, CloudBasedCostModelController)(
@@ -620,6 +622,11 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             last_import_modified_at = last_import_update
             kwargs['last_import_modified_at'] = last_import_modified_at
 
+        # Billing reimport: user shifted import cursor into the past.
+        should_schedule_import = (
+            'last_import_at' in kwargs and cloud_acc_obj.auto_import
+        )
+
         if kwargs:
             updated_cloud_account = super().update(item_id, **kwargs)
             self._publish_validation_warnings_activities(updated_cloud_account,
@@ -630,6 +637,9 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                 kwargs.pop(import_f, None)
         else:
             updated_cloud_account = cloud_acc_obj
+
+        if should_schedule_import:
+            self._schedule_report_import(updated_cloud_account)
 
         if kwargs and self._need_notification(kwargs):
             self._publish_cloud_acc_activity(
@@ -669,7 +679,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         cloud_account = self.get(item_id)
         c_type_ctrl_map = {
             CloudTypes.KUBERNETES_CNR: CloudBasedCostModelController,
-            CloudTypes.DATABRICKS: SkuBasedCostModelController
+            CloudTypes.DATABRICKS: SkuBasedCostModelController,
+            CloudTypes.SNOWFLAKE: SkuBasedCostModelController,
         }
         if cloud_account.type in c_type_ctrl_map:
             c_type_ctrl_map[cloud_account.type](

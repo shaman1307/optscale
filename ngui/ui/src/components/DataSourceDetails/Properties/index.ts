@@ -5,6 +5,7 @@ import DatabricksProperties from "./DatabricksProperties";
 import GcpProperties from "./GcpProperties";
 import K8sProperties from "./K8sProperties";
 import NebiusProperties from "./NebiusProperties";
+import SnowflakeProperties from "./SnowflakeProperties";
 
 export {
   K8sProperties,
@@ -14,4 +15,5 @@ export {
   AzureProperties,
   GcpProperties,
   NebiusProperties,
+  SnowflakeProperties,
 };

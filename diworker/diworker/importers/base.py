@@ -516,9 +516,15 @@ class BaseReportImporter:
 
     def detect_period_start(self):
         ca_last_import_at = self.cloud_acc.get('last_import_at')
-        if (ca_last_import_at and
-                opttime.utcfromtimestamp(
-                    ca_last_import_at).month == opttime.utcnow().month):
+        if ca_last_import_at:
+            ca_last_import_dt = opttime.utcfromtimestamp(ca_last_import_at)
+            now = opttime.utcnow()
+            same_calendar_month = (
+                ca_last_import_dt.year == now.year and
+                ca_last_import_dt.month == now.month)
+        else:
+            same_calendar_month = False
+        if ca_last_import_at and same_calendar_month:
             last_import_at = self.get_last_import_date(self.cloud_acc_id)
             # someone cleared expenses collection
             if not last_import_at:

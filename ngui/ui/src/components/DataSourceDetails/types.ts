@@ -8,6 +8,7 @@ import {
   KUBERNETES_CNR,
   NEBIUS,
   DATABRICKS,
+  SNOWFLAKE,
   GCP_TENANT,
 } from "utils/constants";
 import {
@@ -15,6 +16,7 @@ import {
   AwsPropertiesProps,
   AzurePropertiesProps,
   DatabricksPropertiesProps,
+  SnowflakePropertiesProps,
   GcpPropertiesProps,
   K8sPropertiesProps,
   NebiusPropertiesProps,
@@ -29,13 +31,15 @@ type CloudAccountType =
   | typeof ALIBABA_CNR
   | typeof KUBERNETES_CNR
   | typeof NEBIUS
-  | typeof DATABRICKS;
+  | typeof DATABRICKS
+  | typeof SNOWFLAKE;
 
 export type ConfigMap =
   | AlibabaPropertiesProps["config"]
   | AwsPropertiesProps["config"]
   | AzurePropertiesProps["config"]
   | DatabricksPropertiesProps["config"]
+  | SnowflakePropertiesProps["config"]
   | GcpPropertiesProps["config"]
   | K8sPropertiesProps["config"]
   | NebiusPropertiesProps["config"];
@@ -50,6 +54,7 @@ export type PropertiesMap = {
   [KUBERNETES_CNR]: FC<K8sPropertiesProps>;
   [NEBIUS]: FC<NebiusPropertiesProps>;
   [DATABRICKS]: FC<DatabricksPropertiesProps>;
+  [SNOWFLAKE]: FC<SnowflakePropertiesProps>;
 };
 
 export type DataSourceDetailsProps = {

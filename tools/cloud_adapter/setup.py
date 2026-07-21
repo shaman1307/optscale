@@ -48,6 +48,10 @@ requirements = [
     # Databricks
     'databricks-sdk==0.11.0',
 
+    # Snowflake
+    'snowflake-connector-python>=3.12,<4.0',
+    'cryptography>=42.0.0',
+
     "requests==2.32.4",
     "retrying>=1.4.1",
 ]
@@ -60,5 +64,9 @@ setup(name='cloud-adapter',
       package_dir={'cloud_adapter': ''},
       packages=['cloud_adapter', 'cloud_adapter.clouds', 'cloud_adapter.lib',
                 'cloud_adapter.lib.azure_partner'],
+      package_data={
+          'cloud_adapter.clouds': ['snowflake_queries/*.sql'],
+      },
+      include_package_data=True,
       install_requires=requirements,
       )
