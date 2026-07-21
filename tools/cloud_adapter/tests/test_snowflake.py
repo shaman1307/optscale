@@ -107,6 +107,34 @@ class TestSnowflakeReconcile(unittest.TestCase):
         self.assertEqual(details['reconciliation'][0]['status'], 'skipped')
 
 
+class TestSnowflakeConnect(unittest.TestCase):
+    def test_connect_forces_utc_session(self):
+        from tools.cloud_adapter.clouds.snowflake import Snowflake
+        adapter = Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'w',
+        })
+        fake_conn = MagicMock()
+        fake_cursor = MagicMock()
+        fake_conn.cursor.return_value = fake_cursor
+        with patch.object(
+                adapter, '_load_private_key_bytes', return_value=b'key'), \
+                patch.dict('sys.modules', {
+                    'snowflake': MagicMock(),
+                    'snowflake.connector': MagicMock(),
+                }):
+            import snowflake.connector as sf_connector
+            sf_connector.connect = MagicMock(return_value=fake_conn)
+            conn = adapter.connect()
+        self.assertIs(conn, fake_conn)
+        sf_connector.connect.assert_called_once()
+        self.assertEqual(
+            sf_connector.connect.call_args.kwargs.get('timezone'), 'UTC')
+        fake_cursor.execute.assert_called_with(
+            "ALTER SESSION SET TIMEZONE = 'UTC'")
+        fake_cursor.close.assert_called_once()
+
+
 class TestWarehouseMeteringCollector(unittest.TestCase):
     def test_fetch_normalizes_rows(self):
         start = datetime(2026, 7, 1, tzinfo=timezone.utc)

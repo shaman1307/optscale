@@ -11,6 +11,7 @@ import Table from "components/Table";
 import TextWithDataTestId from "components/TextWithDataTestId";
 import { useReportImportsQuery } from "graphql/__generated__/hooks/restapi";
 import { isEmptyArray } from "utils/arrays";
+import { EN_FULL_FORMAT_HH_MM_SS, format } from "utils/datetime";
 import { CELL_EMPTY_VALUE } from "utils/tables";
 
 const CollectorStatus = ({ status }) => {
@@ -73,7 +74,7 @@ const BillingImportDetails = ({ dataSourceId }) => {
 
   const reconciliation = useMemo(() => {
     const rows = latestDetails?.reconciliation;
-    return Array.isArray(rows) ? rows.filter((row) => row?.service_type) : [];
+    return Array.isArray(rows) ? rows : [];
   }, [latestDetails]);
 
   const warnings = useMemo(() => {
@@ -130,6 +131,22 @@ const BillingImportDetails = ({ dataSourceId }) => {
       },
       {
         header: (
+          <TextWithDataTestId dataTestId="lbl_collector_finished_at">
+            <FormattedMessage id="finishedAt" />
+          </TextWithDataTestId>
+        ),
+        accessorKey: "finished_at",
+        cell: ({ cell }) => {
+          const value = cell.getValue();
+          if (!value) {
+            return CELL_EMPTY_VALUE;
+          }
+          // finished_at is unix UTC; format() renders in the browser local timezone.
+          return format(new Date(Number(value) * 1000), EN_FULL_FORMAT_HH_MM_SS);
+        },
+      },
+      {
+        header: (
           <TextWithDataTestId dataTestId="lbl_collector_status">
             <FormattedMessage id="status" />
           </TextWithDataTestId>
@@ -159,6 +176,7 @@ const BillingImportDetails = ({ dataSourceId }) => {
           </TextWithDataTestId>
         ),
         accessorKey: "service_type",
+        cell: ({ cell }) => cell.getValue() || CELL_EMPTY_VALUE,
       },
       {
         header: (
@@ -200,7 +218,16 @@ const BillingImportDetails = ({ dataSourceId }) => {
           </TextWithDataTestId>
         ),
         accessorKey: "status",
-        cell: ({ cell }) => <ReconcileStatus status={cell.getValue()} />,
+        cell: ({ cell, row: { original } }) => (
+          <Box>
+            <ReconcileStatus status={cell.getValue()} />
+            {original.message ? (
+              <Typography variant="caption" color="textSecondary" display="block">
+                <SlicedText limit={100} text={original.message} />
+              </Typography>
+            ) : null}
+          </Box>
+        ),
       },
     ],
     []

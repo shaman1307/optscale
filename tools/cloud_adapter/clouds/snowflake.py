@@ -100,6 +100,11 @@ def parse_metrics(metrics_array) -> dict:
 
 
 def _to_utc(value):
+    """Normalize Snowflake timestamps to UTC.
+
+    Session timezone is forced to UTC on connect, so naive datetimes from the
+    connector are treated as UTC.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -386,8 +391,16 @@ class Snowflake(CloudBase):
                 private_key=self._load_private_key_bytes(),
                 role=self.role,
                 warehouse=self.warehouse,
+                timezone='UTC',
             )
+            # Force UTC so TIMESTAMP_LTZ filters/binds match OptScale months.
+            cursor = self._connection.cursor()
+            try:
+                cursor.execute("ALTER SESSION SET TIMEZONE = 'UTC'")
+            finally:
+                cursor.close()
         except Exception as exc:
+            self.close()
             raise CloudConnectionError(
                 'Snowflake connection failed: %s' % exc) from exc
         return self._connection
@@ -508,6 +521,8 @@ class Snowflake(CloudBase):
                     'tb': round(average_bytes / (1024 ** 4), 4),
                     'status': status,
                     'message': message,
+                    'finished_at': int(
+                        datetime.now(timezone.utc).timestamp()),
                 })
 
             for warning in self._reconcile_credits(

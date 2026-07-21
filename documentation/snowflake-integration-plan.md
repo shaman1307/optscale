@@ -759,6 +759,52 @@ README.md
 
 ---
 
+## 16. Validation queries (UTC)
+
+OptScale imports Snowflake usage with session timezone forced to **UTC** (`ALTER SESSION SET TIMEZONE = 'UTC'` on connect). Calendar months in UI/ClickHouse are UTC months. Always use **half-open** bounds (`>= start AND < next_month`); `<= 'YYYY-MM-DD'` truncates to midnight and drops almost the entire last day.
+
+### Warehouse credits for a calendar month (UTC)
+
+```sql
+ALTER SESSION SET TIMEZONE = 'UTC';
+SELECT
+    warehouse_id,
+    warehouse_name,
+    SUM(credits_used) AS credits_used,
+    SUM(credits_used_compute) AS credits_used_compute,
+    SUM(credits_used_cloud_services) AS credits_used_cloud_services
+FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+WHERE start_time >= '2026-06-01'
+  AND start_time <  '2026-07-01'
+  AND warehouse_name = 'PHOENIX_DM_INTERNAL_WH'
+GROUP BY ALL;
+```
+
+Expected OptScale cost ≈ `SUM(credits_used) * credit_price`.
+
+### Database storage for a calendar month (UTC)
+
+```sql
+ALTER SESSION SET TIMEZONE = 'UTC';
+SELECT
+    database_id,
+    database_name,
+    AVG(average_database_bytes + average_failsafe_bytes) / POW(1024, 4) AS avg_tb
+FROM SNOWFLAKE.ACCOUNT_USAGE.DATABASE_STORAGE_USAGE_HISTORY
+WHERE usage_date >= '2026-06-01'
+  AND usage_date <  '2026-07-01'
+  AND database_name = 'PHOENIX_PROD'
+GROUP BY ALL;
+```
+
+Expected OptScale cost ≈ `avg_tb * storage_price_per_tb_month` for a full month (daily `TB_d * price / days_in_month` sums to the same).
+
+### Resource id format
+
+Canonical ids: `{account_locator}/warehouse|{database}|pipe|metering|stages/...`. Legacy `{account_locator}/{numeric_id}` resources are obsolete after the format change and should not be used for cost checks.
+
+---
+
 ## Ссылки
 
 - [Organization Usage views](https://docs.snowflake.com/en/sql-reference/organization-usage)
