@@ -4,7 +4,8 @@ import tools.optscale_time as opttime
 from sqlalchemy import and_, true, or_, exists
 import boto3
 from tools.optscale_exceptions.common_exc import (
-    NotFoundException, FailedDependency, WrongArgumentsException
+    NotFoundException, FailedDependency, WrongArgumentsException,
+    ConflictException
 )
 from boto3.session import Config as BotoConfig
 from kombu import Connection as QConnection, Exchange
@@ -70,6 +71,18 @@ class ReportImportBaseController(BaseController):
                         ReportImport.updated_at >= active_threshold
                     )
                 )
+            ))
+        ).scalar()
+
+    def check_in_progress_import(self, cloud_account_id):
+        """True when a live import worker is still processing this account."""
+        active_threshold = opttime.utcnow().timestamp() - ACTIVE_IMPORT_THRESHOLD
+        return self.session.query(
+            exists().where(and_(
+                ReportImport.cloud_account_id == cloud_account_id,
+                ReportImport.deleted_at.is_(False),
+                ReportImport.state == ImportStates.IN_PROGRESS,
+                ReportImport.updated_at >= active_threshold
             ))
         ).scalar()
 
@@ -239,8 +252,13 @@ class ReportImportScheduleController(ReportImportBaseController):
                 decoded_cfg = ca.decoded_config
                 if decoded_cfg.get('linked', False):
                     continue
-            if not self.check_unprocessed_imports(ca.id):
-                result.append(self.create(ca.id, priority=priority))
+            if self.check_unprocessed_imports(ca.id):
+                # Manual schedule for a specific account must fail loudly so
+                # the UI can show that another import is already running.
+                if cloud_account_id is not None:
+                    raise ConflictException(Err.OE0574, [])
+                continue
+            result.append(self.create(ca.id, priority=priority))
         return result
 
 

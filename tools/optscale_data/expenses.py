@@ -70,8 +70,11 @@ class ExpenseQuery:
         last_month_start = (month_start - timedelta(days=1)).replace(day=1)
         start_date = max(last_month_start, first_expense) if (
             first_expense) else last_month_start
-        worked_days = (today - month_start).days
-        forecast_days = (today - start_date).days
+        # today.day = calendar days with cost through "today" (inclusive).
+        # Old (today - month_start).days was off-by-one and counted one extra
+        # remaining day (e.g. cost through Jul 22 → 10 days left instead of 9).
+        worked_days = today.day
+        forecast_days = (today - start_date).days + 1
         daily_forecast = cost / forecast_days if forecast_days > 0 else cost
         _, days_in_month = monthrange(today.year, today.month)
         forecast = month_cost + daily_forecast * (days_in_month - worked_days)

@@ -13,6 +13,7 @@ WHERE usage_date >= %s
       'PIPE',
       'SNOWPIPE',
       'AI_SERVICES',
+      'AI_INFERENCE',
       'AUTO_CLUSTERING',
       'DATABASE_STORAGE',
       'STAGE'

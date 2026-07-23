@@ -1,16 +1,21 @@
 import { useCallback } from "react";
 import { useIntl } from "react-intl";
 import { formatApproximatelyZero } from "components/ApproximatelyZero";
-import { formatCompactNumber } from "components/CompactFormattedNumber";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
 import { ONE_CENT, FORMATTED_MONEY_TYPES } from "utils/constants";
 
 const COMPACT_VALUE_THRESHOLD = 1000;
 
+// Whole dollars with thousands separators ($68,334) — no cents; Intl rounds halfExpand.
+const ROUND_TO_DOLLAR = {
+  maximumFractionDigits: 0,
+  minimumFractionDigits: 0,
+} as const;
+
 const formatCompactMoney =
   (formatter) =>
   ({ value, format }) =>
-    formatCompactNumber(formatter)({ value, format: `${format}Compact` });
+    formatter(value, { format, ...ROUND_TO_DOLLAR });
 
 const formatCommon =
   (formatter) =>
@@ -23,7 +28,10 @@ const formatCompact =
     if (absoluteValue >= COMPACT_VALUE_THRESHOLD) {
       return formatCompactMoney(formatter)({ value, format });
     }
-    return absoluteValue < ONE_CENT ? formatApproximatelyZero(formatter)({ format }) : formatter(value, { format });
+    if (absoluteValue < ONE_CENT) {
+      return formatApproximatelyZero(formatter)({ format });
+    }
+    return formatter(value, { format, ...ROUND_TO_DOLLAR });
   };
 
 const formatTiny =

@@ -1,6 +1,13 @@
+import { useIntl } from "react-intl";
 import DataSourceBillingReimportForm from "components/forms/DataSourceBillingReimportForm/DataSourceBillingReimportForm";
-import { DataSourceDocument, useUpdateDataSourceMutation } from "graphql/__generated__/hooks/restapi";
+import {
+  DataSourceDocument,
+  useReportImportsLazyQuery,
+  useUpdateDataSourceMutation,
+} from "graphql/__generated__/hooks/restapi";
 import { getStartOfDayInUTCinSeconds } from "utils/datetime";
+
+const ACTIVE_IMPORT_STATES = new Set(["scheduled", "in_progress"]);
 
 type DataSourceBillingReimportContainerProps = {
   dataSourceId: string;
@@ -8,11 +15,27 @@ type DataSourceBillingReimportContainerProps = {
 };
 
 const DataSourceBillingReimportContainer = ({ dataSourceId, onSuccess }: DataSourceBillingReimportContainerProps) => {
+  const intl = useIntl();
   const [updateDataSource, { loading }] = useUpdateDataSourceMutation();
+  const [fetchReportImports] = useReportImportsLazyQuery();
 
   return (
     <DataSourceBillingReimportForm
-      onSubmit={(formData) => {
+      onSubmit={async (formData) => {
+        const { data: importsData } = await fetchReportImports({
+          variables: {
+            cloudAccountId: dataSourceId,
+            showCompleted: true,
+          },
+          fetchPolicy: "network-only",
+        });
+        const isImportInProgress = (importsData?.reportImports ?? []).some((item) =>
+          ACTIVE_IMPORT_STATES.has(item.state)
+        );
+        if (isImportInProgress) {
+          throw new Error(intl.formatMessage({ id: "billingImportAlreadyInProgress" }));
+        }
+
         const importFrom = getStartOfDayInUTCinSeconds(formData.importFrom);
 
         return updateDataSource({

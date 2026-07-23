@@ -415,26 +415,39 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         self.send_cloud_account_email(ca_obj, action='created')
         return ca_obj
 
+    def _import_target_cloud_account_ids(self, ca_obj):
+        if ca_obj.type == CloudTypes.AWS_CNR:
+            decoded_config = decode_config(ca_obj.config)
+            if decoded_config.get('linked', False):
+                # trigger import tasks for all non-linked AWS accounts for
+                # current org id — please see OS-5622
+                return [
+                    a.id for a in self._get_non_linked_org_aws_accounts(
+                        ca_obj.organization_id)
+                ]
+        return [ca_obj.id]
+
     def _schedule_report_import(self, ca_obj):
         # schedule report import for this CA immediately
         import_ctrl = ReportImportBaseController(self.session, self._config)
-        ids = list()
-        linked = False
-        if ca_obj.type == CloudTypes.AWS_CNR:
-            decoded_config = decode_config(ca_obj.config)
-            linked = decoded_config.get('linked', False)
-        if linked:
-            # trigger import tasks for all non-linked AWS accounts for current org id
-            # please see OS-5622
-            accounts = self._get_non_linked_org_aws_accounts(
-                ca_obj.organization_id)
-            for a in accounts:
-                ids.append(a.id)
-        else:
-            ids.append(ca_obj.id)
-        for i in ids:
+        for i in self._import_target_cloud_account_ids(ca_obj):
+            if import_ctrl.check_unprocessed_imports(i):
+                LOG.warning(
+                    'Skip scheduling import for cloud account %s: another '
+                    'import is already scheduled or in progress', i)
+                continue
             # set priority 8 according to comments in OS-5602
             import_ctrl.create(i, priority=8)
+
+    def _ensure_reimport_allowed(self, ca_obj, new_last_import_at):
+        """Block billing reimport while another import is actively running."""
+        current = ca_obj.last_import_at or 0
+        if new_last_import_at >= current:
+            return
+        import_ctrl = ReportImportBaseController(self.session, self._config)
+        for i in self._import_target_cloud_account_ids(ca_obj):
+            if import_ctrl.check_in_progress_import(i):
+                raise ConflictException(Err.OE0574, [])
 
     def _get_evironment_cloud_account(self, organization_id):
         return self.session.query(CloudAccount).filter(
@@ -626,6 +639,9 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         should_schedule_import = (
             'last_import_at' in kwargs and cloud_acc_obj.auto_import
         )
+        if should_schedule_import:
+            self._ensure_reimport_allowed(
+                cloud_acc_obj, kwargs['last_import_at'])
 
         if kwargs:
             updated_cloud_account = super().update(item_id, **kwargs)

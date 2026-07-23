@@ -79,6 +79,10 @@ class ScheduleImportsAsyncCollectionHandler(BaseAsyncCollectionHandler,
                 description: |
                     Forbidden:
                     - OE0234: Forbidden
+            409:
+                description: |
+                    Conflict:
+                    - OE0574: Billing import already in progress for this data source
         security:
         - secret: []
         """

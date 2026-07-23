@@ -82,11 +82,11 @@ it("Compact renders without crashing", () => {
     },
     {
       value: -10000,
-      expected: "-$10k",
+      expected: "-$10,000",
     },
     {
       value: -10.005,
-      expected: "-$10.01",
+      expected: "-$10",
     },
     {
       value: -0.001,
@@ -102,15 +102,27 @@ it("Compact renders without crashing", () => {
     },
     {
       value: 10.005,
-      expected: "$10.01",
+      expected: "$10",
     },
     {
       value: 10.05,
-      expected: "$10.05",
+      expected: "$10",
+    },
+    {
+      value: 10.5,
+      expected: "$11",
     },
     {
       value: 10000,
-      expected: "$10k",
+      expected: "$10,000",
+    },
+    {
+      value: 62901,
+      expected: "$62,901",
+    },
+    {
+      value: 68334.47,
+      expected: "$68,334",
     },
   ];
   const div = document.createElement("div");
@@ -190,7 +202,7 @@ it("Tiny compact renders without crashing", () => {
     },
     {
       value: -10000,
-      expected: "-$10k",
+      expected: "-$10,000",
     },
     {
       value: -10.005,
@@ -218,7 +230,7 @@ it("Tiny compact renders without crashing", () => {
     },
     {
       value: 10000,
-      expected: "$10k",
+      expected: "$10,000",
     },
   ];
   const div = document.createElement("div");

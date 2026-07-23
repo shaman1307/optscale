@@ -2514,3 +2514,41 @@ class TestCloudAccountApi(TestApiBase):
                 ca_obj = self.get_cloud_account_object(child_ca_id)
                 conf = decode_config(ca_obj.config)
                 self.assertEqual(conf, {'project_id': 'project_1'})
+
+    def test_billing_reimport_blocked_when_import_in_progress(self):
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_aws_cloud_acc)
+        self.assertEqual(code, 201)
+        # Finish the import created on cloud-account create.
+        code, imports = self.client.report_import_list(
+            cloud_acc['id'], show_completed=False)
+        self.assertEqual(code, 200)
+        for report_import in imports['report_imports']:
+            self.client.report_import_update(
+                report_import['id'], {'state': 'completed'})
+
+        now = opttime.utcnow_timestamp()
+        patch('rest_api.rest_api_server.handlers.v1.base.BaseAuthHandler.'
+              'check_cluster_secret', return_value=True).start()
+        code, resp = self.client.cloud_account_update(
+            cloud_acc['id'], {'last_import_at': now})
+        self.assertEqual(code, 200)
+
+        # Updating last_import_at schedules a new import — mark it running.
+        code, imports = self.client.report_import_list(
+            cloud_acc['id'], show_completed=False)
+        self.assertEqual(code, 200)
+        active = [
+            ri for ri in imports['report_imports']
+            if ri['state'] in ('scheduled', 'in_progress')
+        ]
+        self.assertTrue(active)
+        self.client.report_import_update(
+            active[0]['id'], {'state': 'in_progress'})
+
+        # Reimport moves the cursor backwards — must be rejected while busy.
+        code, resp = self.client.cloud_account_update(
+            cloud_acc['id'],
+            {'last_import_at': now - 7 * 24 * 3600})
+        self.assertEqual(code, 409)
+        self.assertEqual(resp['error']['error_code'], 'OE0574')

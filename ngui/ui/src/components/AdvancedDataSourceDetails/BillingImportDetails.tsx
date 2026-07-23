@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import CancelIcon from "@mui/icons-material/Cancel";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import SyncIcon from "@mui/icons-material/Sync";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { Box, Typography } from "@mui/material";
 import { FormattedMessage, FormattedNumber } from "react-intl";
@@ -14,7 +15,13 @@ import { isEmptyArray } from "utils/arrays";
 import { EN_FULL_FORMAT_HH_MM_SS, format } from "utils/datetime";
 import { CELL_EMPTY_VALUE } from "utils/tables";
 
+const ACTIVE_IMPORT_STATES = new Set(["scheduled", "in_progress"]);
+const IMPORT_POLL_MS = 5000;
+
 const CollectorStatus = ({ status }) => {
+  if (status === "in_progress") {
+    return <IconStatus icon={SyncIcon} color="primary" labelMessageId="inProgress" />;
+  }
   if (status === "ok") {
     return <IconStatus icon={CheckCircleIcon} color="success" labelMessageId="completed" />;
   }
@@ -35,15 +42,30 @@ const ReconcileStatus = ({ status }) => {
 };
 
 const BillingImportDetails = ({ dataSourceId }) => {
-  const { data, loading } = useReportImportsQuery({
+  const { data, loading, startPolling, stopPolling } = useReportImportsQuery({
     variables: {
       cloudAccountId: dataSourceId,
       showCompleted: true,
     },
   });
 
-  const latestDetails = useMemo(() => {
+  const { latestDetails, isImportInProgress, overlayInProgress } = useMemo(() => {
     const imports = data?.reportImports ?? [];
+    const isImportInProgress = imports.some((item) => ACTIVE_IMPORT_STATES.has(item.state));
+    const activeImport = [...imports]
+      .filter((item) => ACTIVE_IMPORT_STATES.has(item.state))
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0];
+    const activeDetails = activeImport?.details as
+      | {
+          collectors?: unknown[];
+          reconciliation?: unknown[];
+          warnings?: unknown[];
+        }
+      | null
+      | undefined;
+    const hasActiveCollectors =
+      Array.isArray(activeDetails?.collectors) && activeDetails.collectors.length > 0;
+
     const withDetails = imports
       .filter((item) => {
         const details = item.details as
@@ -64,13 +86,92 @@ const BillingImportDetails = ({ dataSourceId }) => {
         );
       })
       .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-    return withDetails[0]?.details ?? null;
+    const completedDetails = withDetails[0]?.details ?? null;
+
+    if (hasActiveCollectors) {
+      return {
+        latestDetails: activeDetails,
+        isImportInProgress: true,
+        overlayInProgress: false,
+      };
+    }
+    return {
+      latestDetails: completedDetails,
+      isImportInProgress,
+      // Active import without progressive details yet — mark previous rows live.
+      overlayInProgress: Boolean(isImportInProgress && completedDetails),
+    };
   }, [data]);
+
+  useEffect(() => {
+    if (isImportInProgress) {
+      startPolling(IMPORT_POLL_MS);
+    } else {
+      stopPolling();
+    }
+    return () => stopPolling();
+  }, [isImportInProgress, startPolling, stopPolling]);
 
   const collectors = useMemo(() => {
     const rows = latestDetails?.collectors;
-    return Array.isArray(rows) ? rows : [];
-  }, [latestDetails]);
+    if (!Array.isArray(rows)) {
+      return [];
+    }
+    // Collapse duplicate service_type rows (e.g. multiple AI_SERVICES sources).
+    const STATUS_RANK = { ok: 0, skipped: 1, failed: 2, in_progress: 3 };
+    const byType = new Map();
+    rows.forEach((row) => {
+      const key = row.service_type || "UNKNOWN";
+      const prev = byType.get(key);
+      if (!prev) {
+        byType.set(key, {
+          service_type: key,
+          records: Number(row.records) || 0,
+          credits: Number(row.credits) || 0,
+          average_bytes: Number(row.average_bytes) || 0,
+          tb: Number(row.tb) || 0,
+          status: row.status || "ok",
+          message: row.message || null,
+          finished_at: row.finished_at || null,
+        });
+        return;
+      }
+      prev.records += Number(row.records) || 0;
+      prev.credits += Number(row.credits) || 0;
+      prev.average_bytes += Number(row.average_bytes) || 0;
+      prev.tb += Number(row.tb) || 0;
+      if ((Number(row.finished_at) || 0) > (Number(prev.finished_at) || 0)) {
+        prev.finished_at = row.finished_at;
+      }
+      const nextRank = STATUS_RANK[row.status] ?? 0;
+      const prevRank = STATUS_RANK[prev.status] ?? 0;
+      if (nextRank > prevRank) {
+        prev.status = row.status;
+        prev.message = row.message || prev.message;
+      } else if (nextRank === prevRank && !prev.message && row.message) {
+        prev.message = row.message;
+      }
+    });
+    return Array.from(byType.values()).map((row) => {
+      const base = {
+        ...row,
+        credits: Math.round(row.credits * 10000) / 10000,
+        tb:
+          row.average_bytes > 0
+            ? Math.round((row.average_bytes / 1024 ** 4) * 10000) / 10000
+            : Math.round(row.tb * 10000) / 10000,
+      };
+      if (overlayInProgress) {
+        return {
+          ...base,
+          status: "in_progress",
+          finished_at: null,
+          message: null,
+        };
+      }
+      return base;
+    });
+  }, [latestDetails, overlayInProgress]);
 
   const reconciliation = useMemo(() => {
     const rows = latestDetails?.reconciliation;
@@ -108,25 +209,27 @@ const BillingImportDetails = ({ dataSourceId }) => {
           </TextWithDataTestId>
         ),
         accessorKey: "credits",
-        cell: ({ cell }) => <FormattedNumber value={cell.getValue() || 0} maximumFractionDigits={4} />,
+        cell: ({ cell }) => (
+          <FormattedNumber value={Math.round(Number(cell.getValue()) || 0)} maximumFractionDigits={0} />
+        ),
       },
       {
         header: (
           <TextWithDataTestId dataTestId="lbl_collector_tb">
-            <FormattedMessage id="storage" />
+            <FormattedMessage id="storageTb" />
           </TextWithDataTestId>
         ),
         accessorKey: "tb",
         cell: ({ cell, row: { original } }) => {
           const serviceType = original.service_type || "";
-          if (serviceType !== "DATABASE_STORAGE" && serviceType !== "STAGE_STORAGE") {
+          if (serviceType !== "STORAGE" && serviceType !== "STAGE") {
             return CELL_EMPTY_VALUE;
           }
           const value = cell.getValue();
           if (value == null) {
             return CELL_EMPTY_VALUE;
           }
-          return <FormattedNumber value={value} maximumFractionDigits={4} />;
+          return <FormattedNumber value={value} maximumFractionDigits={1} minimumFractionDigits={0} />;
         },
       },
       {

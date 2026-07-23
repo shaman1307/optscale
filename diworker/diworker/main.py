@@ -60,6 +60,7 @@ class DIWorker(ConsumerMixin):
         self.diworker_settings = diworker_settings
         self.config_cl_params = config_params
         self.active_report_import_ids = set()
+        self.active_cloud_account_ids = set()
         self.active_reports_lock = Lock()
         self.running = True
         self.thread = Thread(
@@ -150,25 +151,40 @@ class DIWorker(ConsumerMixin):
         if not report_import_id:
             raise Exception('invalid task received: {}'.format(task))
 
+        cloud_acc_id = None
         with self.active_reports_lock:
+            _, import_dict = rest_cl.report_import_get(report_import_id)
+            cloud_acc_id = import_dict.get('cloud_account_id')
+            # Reject concurrent work for the same cloud account in this worker
+            # before marking the import in_progress (avoids the dual-start race).
+            if cloud_acc_id in self.active_cloud_account_ids:
+                reason = (
+                    'Import cancelled due another import already running '
+                    'locally for cloud account %s' % cloud_acc_id)
+                rest_cl.report_import_update(
+                    report_import_id,
+                    {'state': 'failed', 'state_reason': reason}
+                )
+                return
+            _, resp = rest_cl.report_import_list(
+                cloud_acc_id, show_active=True)
+            imports = list(filter(
+                lambda x: x['id'] != report_import_id, resp['report_imports']))
+            if imports:
+                reason = (
+                    'Import cancelled due another import: %s' % imports[0]['id'])
+                rest_cl.report_import_update(
+                    report_import_id,
+                    {'state': 'failed', 'state_reason': reason}
+                )
+                return
             self.active_report_import_ids.add(report_import_id)
-
-        _, import_dict = rest_cl.report_import_get(report_import_id)
-        cloud_acc_id = import_dict.get('cloud_account_id')
-        _, resp = rest_cl.report_import_list(cloud_acc_id, show_active=True)
-        imports = list(filter(
-            lambda x: x['id'] != report_import_id, resp['report_imports']))
-        if imports:
-            reason = 'Import cancelled due another import: %s' % imports[0]['id']
+            self.active_cloud_account_ids.add(cloud_acc_id)
+            is_recalculation = import_dict.get('is_recalculation', False)
+            LOG.info('Starting processing for task: %s, purpose %s',
+                     task, 'recalculation ' if is_recalculation else 'import')
             rest_cl.report_import_update(
-                report_import_id,
-                {'state': 'failed', 'state_reason': reason}
-            )
-            return
-        is_recalculation = import_dict.get('is_recalculation', False)
-        LOG.info('Starting processing for task: %s, purpose %s',
-                 task, 'recalculation ' if is_recalculation else 'import')
-        rest_cl.report_import_update(report_import_id, {'state': 'in_progress'})
+                report_import_id, {'state': 'in_progress'})
 
         importer_params = {
             'cloud_account_id': cloud_acc_id,
@@ -206,6 +222,7 @@ class DIWorker(ConsumerMixin):
             export_scheme = ca['config'].get('expense_import_scheme')
             importer = get_importer_class(cc_type, export_scheme)(
                 **importer_params)
+            importer.report_import_id = report_import_id
             importer.import_report()
             completed_payload = {'state': 'completed'}
             get_details = getattr(importer, 'get_import_details', None)
@@ -244,6 +261,10 @@ class DIWorker(ConsumerMixin):
                 ca, previous_attempt_ts, now,
                 is_throttled=_is_rate_limit_exc(exc))
             raise
+        finally:
+            if cloud_acc_id:
+                with self.active_reports_lock:
+                    self.active_cloud_account_ids.discard(cloud_acc_id)
 
     def send_report_failed_email(self, cloud_account, previous_attempt_ts,
                                  now, is_throttled=False):

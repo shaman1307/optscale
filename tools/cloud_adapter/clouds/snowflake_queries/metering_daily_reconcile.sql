@@ -10,6 +10,7 @@ WHERE usage_date >= %s
   AND service_type IN (
       'WAREHOUSE_METERING',
       'PIPE',
-      'SNOWPIPE'
+      'SNOWPIPE',
+      'AUTO_CLUSTERING'
   )
 ORDER BY usage_date, service_type

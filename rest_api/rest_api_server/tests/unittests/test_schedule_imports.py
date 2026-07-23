@@ -234,3 +234,14 @@ class TestScheduleImportsApi(TestApiBase):
         with freeze_time(opttime.utcnow() + timedelta(hours=10, minutes=31)):
             code, ret = self.client.schedule_import(0)
             self.assertEqual(len(ret['report_imports']), 1)
+
+    def test_schedule_specific_cloud_account_busy(self):
+        cloud_acc_id = self._create_cloud_acc_object(import_period=0)
+        code, ret = self.client.schedule_import(
+            cloud_account_id=cloud_acc_id)
+        self.assertEqual(code, 201)
+        self.assertEqual(len(ret['report_imports']), 1)
+        code, ret = self.client.schedule_import(
+            cloud_account_id=cloud_acc_id)
+        self.assertEqual(code, 409)
+        self.assertEqual(ret['error']['error_code'], 'OE0574')

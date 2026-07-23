@@ -22,6 +22,7 @@ import TabsWrapper from "components/TabsWrapper";
 import DataSourceNodesContainer from "containers/DataSourceNodesContainer";
 import DataSourceSkusContainer from "containers/DataSourceSkusContainer";
 import UploadCloudReportDataContainer from "containers/UploadCloudReportDataContainer";
+import { useReportImportsQuery } from "graphql/__generated__/hooks/restapi";
 import { useAllDataSources } from "hooks/coreData/useAllDataSources";
 import { useDataSources } from "hooks/useDataSources";
 import { useIsFeatureEnabled } from "hooks/useIsFeatureEnabled";
@@ -46,6 +47,9 @@ import {
 import { summarizeChildrenDetails } from "utils/dataSources";
 import { SPACING_2 } from "utils/layouts";
 import { getPercentageChangeModule, round } from "utils/math";
+
+const ACTIVE_IMPORT_STATES = new Set(["scheduled", "in_progress"]);
+
 const {
   DETAILS: DETAILS_TAB,
   UPLOAD: UPLOAD_TAB,
@@ -62,13 +66,27 @@ const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoadi
   // Loading state is inconsistent, the title is not displayed at all on initial load
   const { logo, icon: Icon } = useDataSources(type);
 
+  const isEligibleForReimport =
+    (type === AWS_CNR && !config?.linked) ||
+    [AZURE_CNR, GCP_CNR, ALIBABA_CNR, NEBIUS, SNOWFLAKE].includes(type);
+
+  const { data: reportImportsData } = useReportImportsQuery({
+    variables: {
+      cloudAccountId: id,
+      showCompleted: true,
+    },
+    skip: !id || !isEligibleForReimport,
+    pollInterval: 10000,
+  });
+
+  const isImportInProgress = (reportImportsData?.reportImports ?? []).some((item) =>
+    ACTIVE_IMPORT_STATES.has(item.state)
+  );
+
   const getActionBarItems = () => {
     const getBillingReimportButton = () => {
       const hasPreviousImport = lastImportAt !== 0;
-
-      const isEligibleForReimport =
-        (type === AWS_CNR && !config.linked) ||
-        [AZURE_CNR, GCP_CNR, ALIBABA_CNR, NEBIUS, SNOWFLAKE].includes(type);
+      const isDisabled = !hasPreviousImport || isImportInProgress;
 
       return {
         show: isEligibleForReimport,
@@ -81,10 +99,16 @@ const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoadi
           isLoading,
           action: () => openSideModal(DataSourceBillingReimportModal, { name, id, type, config }),
           requiredActions: ["MANAGE_CLOUD_CREDENTIALS"],
-          disabled: !hasPreviousImport,
+          disabled: isDisabled,
           tooltip: {
-            show: !hasPreviousImport,
-            value: <FormattedMessage id="dataSourceNoBillingReportsProcessedYet" />,
+            show: isDisabled,
+            value: (
+              <FormattedMessage
+                id={
+                  isImportInProgress ? "billingImportAlreadyInProgress" : "dataSourceNoBillingReportsProcessedYet"
+                }
+              />
+            ),
           },
         }),
       };
