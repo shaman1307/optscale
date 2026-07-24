@@ -636,6 +636,8 @@ Setup guide (новый doc): как создать service user с key-pair в 
 | 5.4 | README: Snowflake icon + feature mention |
 | 5.5 | E2E test: connect → import → verify breakdown |
 
+**Status note (2026-07):** Operator manuals landed (`documentation/snowflake_manual.md`, `documentation/k8s_deploy_cloud_engineer.md`). Dedicated Cortex UI / model-override UI / resource AI panel — **deferred** (Cost Explorer `service_type=AI_SERVICES` is sufficient for now). Pool proportional split — phase 2 (separate TZ).
+
 ---
 
 ### Фаза 6 — Optional enhancements
