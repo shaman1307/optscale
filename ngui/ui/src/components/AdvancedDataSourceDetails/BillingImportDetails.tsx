@@ -6,13 +6,14 @@ import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { Box, Typography } from "@mui/material";
 import { FormattedMessage, FormattedNumber } from "react-intl";
 import IconStatus from "components/IconStatus";
+import KeyValueLabel from "components/KeyValueLabel/KeyValueLabel";
 import SlicedText from "components/SlicedText";
 import SubTitle from "components/SubTitle";
 import Table from "components/Table";
 import TextWithDataTestId from "components/TextWithDataTestId";
 import { useReportImportsQuery } from "graphql/__generated__/hooks/restapi";
 import { isEmptyArray } from "utils/arrays";
-import { EN_FULL_FORMAT_HH_MM_SS, format } from "utils/datetime";
+import { EN_FULL_FORMAT_HH_MM_SS, format, formatUTC } from "utils/datetime";
 import { CELL_EMPTY_VALUE } from "utils/tables";
 
 const ACTIVE_IMPORT_STATES = new Set(["scheduled", "in_progress"]);
@@ -60,6 +61,8 @@ const BillingImportDetails = ({ dataSourceId }) => {
           collectors?: unknown[];
           reconciliation?: unknown[];
           warnings?: unknown[];
+          period_start?: number;
+          period_end?: number;
         }
       | null
       | undefined;
@@ -73,6 +76,8 @@ const BillingImportDetails = ({ dataSourceId }) => {
               collectors?: unknown[];
               reconciliation?: unknown[];
               warnings?: unknown[];
+              period_start?: number;
+              period_end?: number;
             }
           | null
           | undefined;
@@ -336,6 +341,9 @@ const BillingImportDetails = ({ dataSourceId }) => {
     []
   );
 
+  const importPeriodStart = (latestDetails as { period_start?: number } | null)?.period_start;
+  const importPeriodEnd = (latestDetails as { period_end?: number } | null)?.period_end;
+
   if (loading && !latestDetails) {
     return null;
   }
@@ -349,6 +357,23 @@ const BillingImportDetails = ({ dataSourceId }) => {
       <SubTitle>
         <FormattedMessage id="billingImportDetails" />
       </SubTitle>
+      {importPeriodStart && importPeriodEnd ? (
+        <Box mt={1} mb={1}>
+          <KeyValueLabel
+            keyMessageId="lastImportPeriod"
+            value={
+              <FormattedMessage
+                id="fromTo"
+                values={{
+                  from: formatUTC(importPeriodStart, "MMM d, yyyy"),
+                  to: formatUTC(importPeriodEnd, "MMM d, yyyy"),
+                }}
+              />
+            }
+            dataTestIds={{ key: "p_last_import_period", value: "value_last_import_period" }}
+          />
+        </Box>
+      ) : null}
       {!isEmptyArray(collectors) && (
         <Box mt={1} mb={2}>
           <Typography variant="subtitle2" gutterBottom>

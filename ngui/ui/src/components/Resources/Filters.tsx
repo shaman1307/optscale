@@ -137,6 +137,7 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
       { key: "tag", data: filters.tag },
       { key: "withoutTag", data: filters.without_tag },
       { key: "meta", data: filters.meta },
+      { key: "accountLocator", data: filters.account_locator },
       { key: "networkTrafficFrom", data: filters.traffic_from },
       { key: "networkTrafficTo", data: filters.traffic_to },
       { key: "k8sNode", data: filters.k8s_node },

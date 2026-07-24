@@ -1,4 +1,5 @@
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
+import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 import BlockOutlinedIcon from "@mui/icons-material/BlockOutlined";
 import CategoryOutlinedIcon from "@mui/icons-material/CategoryOutlined";
 import CloudOutlinedIcon from "@mui/icons-material/CloudOutlined";
@@ -1292,6 +1293,105 @@ export const FILTER_CONFIGS = {
       },
       appliedFilter: {
         networkTrafficTo: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+        },
+      },
+    },
+  },
+  accountLocator: {
+    id: "accountLocator",
+    apiName: "account_locator",
+    type: "selection",
+    label: <FormattedMessage id="accountLocator" />,
+    labelString: intl.formatMessage({ id: "accountLocator" }),
+    icon: <BadgeOutlinedIcon />,
+    renderItem: (item) => <CloudLabel name={item.name} type={item.cloud_type} disableLink />,
+    renderSelectedItem: (item) => item.name,
+    searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
+    renderPerspectiveItem: (appliedValue, filterValues, { stringify = false } = {}) => {
+      const item = filterValues.find((filterValue) => {
+        if (filterValue === null) {
+          return appliedValue === EMPTY_UUID;
+        }
+
+        return filterValue.name === appliedValue;
+      });
+
+      if (item === undefined) {
+        return appliedValue;
+      }
+
+      if (item === null) {
+        return intl.formatMessage({ id: "notSet" });
+      }
+
+      if (stringify) {
+        return item.name;
+      }
+
+      return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
+    },
+    getValuesFromSearchParams: () => ({
+      values: getSelectionAppliedValuesFromSearchParams("accountLocator"),
+    }),
+    getDefaultValue: () => ({
+      values: [],
+    }),
+    isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
+    transformers: {
+      getItems: (accountLocators) =>
+        accountLocators?.map((item) => {
+          if (item === null) {
+            return {
+              name: intl.formatMessage({ id: "notSet" }),
+              value: EMPTY_UUID,
+            };
+          }
+          return {
+            name: item.name,
+            value: item.name,
+            cloud_type: item.cloud_type,
+          };
+        }) ?? [],
+      getValue: (item) => (item === null ? EMPTY_UUID : item.name),
+      toApi: (appliedFilter) => ({
+        accountLocator: appliedFilter.values,
+      }),
+      filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
+        filterValues.filter((filterValue) => {
+          if (filterValue === null) {
+            return appliedFilters.includes(EMPTY_UUID);
+          }
+
+          return appliedFilters.includes(filterValue.name);
+        }),
+    },
+    schema: {
+      filterValues: {
+        account_locator: {
+          type: "array",
+          items: {
+            type: "object",
+            nullable: true,
+            required: ["name", "cloud_type"],
+            additionalProperties: false,
+            properties: {
+              name: {
+                type: "string",
+              },
+              cloud_type: {
+                type: "string",
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+            },
+          },
+        },
+      },
+      appliedFilter: {
+        accountLocator: {
           type: "array",
           items: {
             type: "string",

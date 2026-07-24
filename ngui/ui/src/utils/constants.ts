@@ -291,6 +291,9 @@ export const K8S_NAMESPACE_FILTER = "k8sNamespace";
 export const K8S_SERVICE_BE_FILTER = "k8s_service";
 export const K8S_SERVICE_FILTER = "k8sService";
 
+export const ACCOUNT_LOCATOR_BE_FILTER = "account_locator";
+export const ACCOUNT_LOCATOR_FILTER = "accountLocator";
+
 export const TAG_BE_FILTER = "tag";
 export const TAG_FILTER = "tag";
 
@@ -646,6 +649,7 @@ export const RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY = Object.freeze({
   K8S_NODE: "k8s_node",
   K8S_NAMESPACE: "k8s_namespace",
   K8S_SERVICE: "k8s_service",
+  ACCOUNT_LOCATOR: "account_locator",
 });
 
 export const RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY_VALUES = Object.freeze(Object.values(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY));

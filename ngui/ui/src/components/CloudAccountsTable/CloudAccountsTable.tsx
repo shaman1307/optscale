@@ -18,8 +18,9 @@ import Tooltip from "components/Tooltip";
 import { intl } from "translations/react-intl-config";
 import { CLOUD_ACCOUNT_CONNECT } from "urls";
 import { getColorScale } from "utils/charts";
-import { FORMATTED_MONEY_TYPES } from "utils/constants";
+import { FORMATTED_MONEY_TYPES, SNOWFLAKE } from "utils/constants";
 import { BILLING_IMPORT_STATUS, getBillingImportStatus, summarizeChildrenDetails } from "utils/dataSources";
+import { formatUTC } from "utils/datetime";
 import useStyles from "./CloudAccountsTable.styles";
 
 const NameCell = ({
@@ -103,9 +104,44 @@ const CloudAccountsTable = ({ cloudAccounts = [], isLoading = false }) => {
         cell: ({ cell }) => <CloudType type={cell.getValue()} />,
       },
       {
+        header: intl.formatMessage({ id: "billingDataPeriod" }),
+        id: "details.billing_period",
+        enableSorting: false,
+        accessorFn: (originalRow) => {
+          const start = originalRow.details?.billing_period_start;
+          const end = originalRow.details?.billing_period_end;
+          if (!start || !end) {
+            return null;
+          }
+          return `${start}:${end}`;
+        },
+        cell: ({ row: { original } }) => {
+          const start = original.details?.billing_period_start;
+          const end = original.details?.billing_period_end;
+          if (original.type !== SNOWFLAKE || !start || !end) {
+            return "—";
+          }
+          return (
+            <FormattedMessage
+              id="fromTo"
+              values={{
+                from: formatUTC(start, "MMM d, yyyy"),
+                to: formatUTC(end, "MMM d, yyyy"),
+              }}
+            />
+          );
+        },
+      },
+      {
         header: intl.formatMessage({ id: "resourcesChargedThisMonth" }),
         id: "details.resources",
         accessorFn: (originalRow) => originalRow.details?.resources,
+        emptyValue: "0",
+      },
+      {
+        header: intl.formatMessage({ id: "totalResources" }),
+        id: "details.total_resources",
+        accessorFn: (originalRow) => originalRow.details?.total_resources,
         emptyValue: "0",
       },
       {
@@ -114,6 +150,12 @@ const CloudAccountsTable = ({ cloudAccounts = [], isLoading = false }) => {
         accessorFn: (originalRow) => originalRow.details?.cost,
         cell: ({ cell }) => <FormattedMoney type={FORMATTED_MONEY_TYPES.COMMON} value={cell.getValue()} />,
         defaultSort: "desc",
+      },
+      {
+        header: intl.formatMessage({ id: "totalExpenses" }),
+        id: "details.total_cost",
+        accessorFn: (originalRow) => originalRow.details?.total_cost,
+        cell: ({ cell }) => <FormattedMoney type={FORMATTED_MONEY_TYPES.COMMON} value={cell.getValue()} />,
       },
       {
         header: intl.formatMessage({ id: "expensesForecastThisMonth" }),

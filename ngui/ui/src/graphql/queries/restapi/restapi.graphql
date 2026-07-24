@@ -93,6 +93,7 @@ fragment SnowflakeDataSourceConfigFragment on SnowflakeDataSource {
     user
     role
     warehouse
+    billing_source
     cost_model {
       credit_price
       storage_price_per_tb_month
@@ -168,6 +169,10 @@ query DataSources($organizationId: ID!) {
       resources
       forecast
       last_month_cost
+      total_cost
+      total_resources
+      billing_period_start
+      billing_period_end
     }
     ...AwsDataSourceConfigFragment
     ...AzureTenantDataSourceConfigFragment
@@ -213,6 +218,10 @@ query DataSource($dataSourceId: ID!, $requestParams: DataSourceRequestParams) {
       forecast
       last_month_cost
       resources
+      total_cost
+      total_resources
+      billing_period_start
+      billing_period_end
     }
     ...AwsDataSourceConfigFragment
     ...AzureTenantDataSourceConfigFragment

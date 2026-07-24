@@ -353,6 +353,8 @@ const getSnowflakeParameters = (formData: FieldValues) => ({
     private_key: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY],
     warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
     role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
+    billing_source:
+      formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE] || "account_usage",
     cost_model: { credit_price: 0, storage_price_per_tb_month: 23 },
   },
 });

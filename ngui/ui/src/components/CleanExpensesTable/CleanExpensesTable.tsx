@@ -8,6 +8,7 @@ import { useDispatch } from "react-redux";
 import { markResourcesAsEnvironments } from "api";
 import { MARK_RESOURCES_AS_ENVIRONMENTS } from "api/restapi/actionTypes";
 import CloudLabel from "components/CloudLabel";
+import CopyText from "components/CopyText";
 import ExpenseCell from "components/ExpenseCell";
 import ExpensesTableHeader from "components/ExpensesTableHeader";
 import ResourceCell from "components/ResourceCell";
@@ -195,6 +196,48 @@ const CleanExpensesTable = ({
             }}
           />
         ),
+      },
+      {
+        header: (
+          <TextWithDataTestId dataTestId="lbl_account_locator">
+            <FormattedMessage id="accountLocator" />
+          </TextWithDataTestId>
+        ),
+        accessorKey: "account_locator",
+        accessorFn: (row) =>
+          [row.account_name || row.meta?.account_name, row.account_locator].filter(Boolean).join(" "),
+        columnSelector: {
+          accessor: "account_locator",
+          messageId: "accountLocator",
+          dataTestId: "btn_toggle_column_account_locator",
+        },
+        cell: ({
+          row: {
+            original: { account_locator: accountLocator, account_name: accountName, meta },
+          },
+        }) => {
+          const name = accountName || meta?.account_name;
+          if (!accountLocator && !name) {
+            return CELL_EMPTY_VALUE;
+          }
+          const copyText = [name, accountLocator].filter(Boolean).join(" / ");
+          return (
+            <CopyText variant="inherit" text={copyText}>
+              {name ? (
+                <>
+                  <div>{name}</div>
+                  {accountLocator ? (
+                    <Typography variant="caption" component="div">
+                      {accountLocator}
+                    </Typography>
+                  ) : null}
+                </>
+              ) : (
+                accountLocator
+              )}
+            </CopyText>
+          );
+        },
       },
       {
         header: (

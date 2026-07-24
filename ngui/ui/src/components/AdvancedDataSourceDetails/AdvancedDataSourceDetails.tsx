@@ -14,7 +14,7 @@ import { isEmptyArray } from "utils/arrays";
 import { discoveryStatus, lastTimeLocal, resourceType } from "utils/columns";
 import { DISCOVERY_STATUS } from "utils/columns/discoveryStatus";
 import { BILLING_IMPORT_STATUS, getBillingImportStatus } from "utils/dataSources";
-import { getTimeDistance } from "utils/datetime";
+import { getTimeDistance, formatUTC } from "utils/datetime";
 import { SNOWFLAKE } from "utils/constants";
 
 const Discovery = ({ discoveryInfos }) => {
@@ -96,6 +96,8 @@ const AdvancedDataSourceDetails = ({
   lastMetricsRetrievalAttempt,
   lastGettingMetricAttemptError,
   discoveryInfos = [],
+  billingPeriodStart,
+  billingPeriodEnd,
 }) => (
   <>
     <Box display="flex" flexWrap="wrap" rowGap={1} columnGap={16}>
@@ -138,6 +140,23 @@ const AdvancedDataSourceDetails = ({
                 }
                 dataTestIds={{ key: "p_last_billing_report_status", value: "value_last_billing_report_status" }}
               />
+              {dataSourceType === SNOWFLAKE && billingPeriodStart && billingPeriodEnd ? (
+                <KeyValueLabel
+                  key="billingDataPeriod"
+                  keyMessageId="billingDataPeriod"
+                  value={
+                    <FormattedMessage
+                      id="fromTo"
+                      values={{
+                        // Include month name + year so multi-year ranges are unambiguous.
+                        from: formatUTC(billingPeriodStart, "MMM d, yyyy"),
+                        to: formatUTC(billingPeriodEnd, "MMM d, yyyy"),
+                      }}
+                    />
+                  }
+                  dataTestIds={{ key: "p_billing_data_period", value: "value_billing_data_period" }}
+                />
+              ) : null}
               {lastImportAttemptError && lastImportAt < lastImportAttemptAt ? (
                 <KeyValueLabel
                   key="reason"

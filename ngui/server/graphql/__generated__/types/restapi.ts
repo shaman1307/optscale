@@ -239,6 +239,7 @@ export type BillingSubscriptionPlan = {
 export type BillingSubscriptionStatus = "active" | "limit_exceeded" | "suspended";
 
 export type BreakdownBy =
+  | "account_locator"
   | "cloud_account_id"
   | "employee_id"
   | "k8s_namespace"
@@ -332,11 +333,15 @@ export type CreateStripeCheckoutSessionInput = {
 
 export type DataSourceDetails = {
   __typename?: "DataSourceDetails";
+  billing_period_end?: Maybe<Scalars["Int"]["output"]>;
+  billing_period_start?: Maybe<Scalars["Int"]["output"]>;
   cost: Scalars["Float"]["output"];
   discovery_infos?: Maybe<Array<Maybe<DataSourceDiscoveryInfos>>>;
   forecast: Scalars["Float"]["output"];
   last_month_cost?: Maybe<Scalars["Float"]["output"]>;
   resources: Scalars["Int"]["output"];
+  total_cost?: Maybe<Scalars["Float"]["output"]>;
+  total_resources?: Maybe<Scalars["Int"]["output"]>;
 };
 
 export type DataSourceDiscoveryInfos = {
@@ -396,6 +401,7 @@ export type DatabricksConfig = {
 export type SnowflakeConfig = {
   __typename?: "SnowflakeConfig";
   account?: Maybe<Scalars["String"]["output"]>;
+  billing_source?: Maybe<Scalars["String"]["output"]>;
   cost_model?: Maybe<SnowflakeCostModelConfig>;
   role?: Maybe<Scalars["String"]["output"]>;
   user?: Maybe<Scalars["String"]["output"]>;
@@ -410,8 +416,9 @@ export type SnowflakeCostModelConfig = {
 
 export type SnowflakeConfigInput = {
   account: Scalars["String"]["input"];
+  billing_source?: InputMaybe<Scalars["String"]["input"]>;
   cost_model?: InputMaybe<Scalars["JSONObject"]["input"]>;
-  private_key: Scalars["String"]["input"];
+  private_key?: InputMaybe<Scalars["String"]["input"]>;
   role?: InputMaybe<Scalars["String"]["input"]>;
   user: Scalars["String"]["input"];
   warehouse: Scalars["String"]["input"];
@@ -1527,11 +1534,15 @@ export type DataSourceDetailsResolvers<
   ContextType = ContextValue,
   ParentType extends ResolversParentTypes["DataSourceDetails"] = ResolversParentTypes["DataSourceDetails"],
 > = {
+  billing_period_end?: Resolver<Maybe<ResolversTypes["Int"]>, ParentType, ContextType>;
+  billing_period_start?: Resolver<Maybe<ResolversTypes["Int"]>, ParentType, ContextType>;
   cost?: Resolver<ResolversTypes["Float"], ParentType, ContextType>;
   discovery_infos?: Resolver<Maybe<Array<Maybe<ResolversTypes["DataSourceDiscoveryInfos"]>>>, ParentType, ContextType>;
   forecast?: Resolver<ResolversTypes["Float"], ParentType, ContextType>;
   last_month_cost?: Resolver<Maybe<ResolversTypes["Float"]>, ParentType, ContextType>;
   resources?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  total_cost?: Resolver<Maybe<ResolversTypes["Float"]>, ParentType, ContextType>;
+  total_resources?: Resolver<Maybe<ResolversTypes["Int"]>, ParentType, ContextType>;
 };
 
 export type DataSourceDiscoveryInfosResolvers<
@@ -1585,6 +1596,7 @@ export type SnowflakeConfigResolvers<
   ParentType extends ResolversParentTypes["SnowflakeConfig"] = ResolversParentTypes["SnowflakeConfig"],
 > = {
   account?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
+  billing_source?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
   cost_model?: Resolver<Maybe<ResolversTypes["SnowflakeCostModelConfig"]>, ParentType, ContextType>;
   role?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;
   user?: Resolver<Maybe<ResolversTypes["String"]>, ParentType, ContextType>;

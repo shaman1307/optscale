@@ -294,6 +294,8 @@ const Tabs = ({
   lastMetricsRetrievalAttempt,
   lastGettingMetricAttemptError,
   discoveryInfos,
+  billingPeriodStart,
+  billingPeriodEnd,
   config,
   isLoading,
   isTenant,
@@ -330,6 +332,8 @@ const Tabs = ({
           lastMetricsRetrievalAttempt={lastMetricsRetrievalAttempt}
           lastGettingMetricAttemptError={lastGettingMetricAttemptError}
           discoveryInfos={discoveryInfos}
+          billingPeriodStart={billingPeriodStart}
+          billingPeriodEnd={billingPeriodEnd}
         />
       ),
       renderCondition: () => !isTenant,
@@ -401,6 +405,8 @@ const CloudAccountDetails = ({ data = {}, isLoading = false }) => {
     last_month_cost: lastMonthCost = 0,
     forecast = 0,
     discovery_infos: discoveryInfos,
+    billing_period_start: billingPeriodStart,
+    billing_period_end: billingPeriodEnd,
   } = { ...details, ...childrenDetails };
 
   const isTenant = [AZURE_TENANT, GCP_TENANT].includes(type);
@@ -443,6 +449,8 @@ const CloudAccountDetails = ({ data = {}, isLoading = false }) => {
               lastMetricsRetrievalAttempt={lastMetricsRetrievalAttempt}
               lastGettingMetricAttemptError={lastGettingMetricAttemptError}
               discoveryInfos={discoveryInfos}
+              billingPeriodStart={billingPeriodStart}
+              billingPeriodEnd={billingPeriodEnd}
               config={config}
               isLoading={isLoading}
               isTenant={isTenant}

@@ -259,6 +259,8 @@ const UpdateCredentialsWarning = ({ type }) => {
       return renderUpdateWarning();
     case NEBIUS:
       return renderUpdateWarning();
+    case SNOWFLAKE:
+      return renderUpdateWarning();
     default:
       return null;
   }
@@ -448,16 +450,24 @@ const getConfig = (type, config) => {
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY]: "",
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE]: config.warehouse,
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE]: config.role || "ACCOUNTADMIN",
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE]:
+            config.billing_source || "account_usage",
         }),
-        parseFormDataToApiParams: (formData) => ({
-          config: {
-            account: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT],
-            user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
-            private_key: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY],
-            warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
-            role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
-          },
-        }),
+        parseFormDataToApiParams: (formData) => {
+          const privateKey = formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY]?.trim();
+
+          return {
+            config: {
+              account: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT],
+              user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
+              ...(privateKey ? { private_key: privateKey } : {}),
+              warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
+              role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
+              billing_source:
+                formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE] || "account_usage",
+            },
+          };
+        },
       };
     case KUBERNETES_CNR:
       return {

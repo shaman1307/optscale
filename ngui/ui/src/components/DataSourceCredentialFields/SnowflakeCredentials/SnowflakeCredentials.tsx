@@ -1,5 +1,5 @@
 import { FormattedMessage } from "react-intl";
-import { TextInput } from "components/forms/common/fields";
+import { RadioGroup, TextInput } from "components/forms/common/fields";
 import QuestionMark from "components/QuestionMark";
 
 export const FIELD_NAMES = Object.freeze({
@@ -8,9 +8,15 @@ export const FIELD_NAMES = Object.freeze({
   PRIVATE_KEY: "privateKey",
   ROLE: "role",
   WAREHOUSE: "warehouse",
+  BILLING_SOURCE: "billingSource",
 });
 
-const SnowflakeCredentials = ({ readOnlyFields = [] }) => {
+export const BILLING_SOURCE_VALUES = Object.freeze({
+  ACCOUNT_USAGE: "account_usage",
+  ORGANIZATION_USAGE: "organization_usage",
+});
+
+const SnowflakeCredentials = ({ readOnlyFields = [], privateKeyRequired = true }) => {
   const isReadOnly = (fieldName) => readOnlyFields.includes(fieldName);
 
   return (
@@ -38,7 +44,7 @@ const SnowflakeCredentials = ({ readOnlyFields = [] }) => {
       />
       <TextInput
         name={FIELD_NAMES.PRIVATE_KEY}
-        required
+        required={privateKeyRequired}
         masked
         multiline
         minRows={4}
@@ -67,6 +73,23 @@ const SnowflakeCredentials = ({ readOnlyFields = [] }) => {
         }}
         label={<FormattedMessage id="role" />}
         dataTestId="input_snowflake_role"
+      />
+      <RadioGroup
+        name={FIELD_NAMES.BILLING_SOURCE}
+        defaultValue={BILLING_SOURCE_VALUES.ACCOUNT_USAGE}
+        labelMessageId="snowflakeBillingSource"
+        radioButtons={[
+          {
+            value: BILLING_SOURCE_VALUES.ACCOUNT_USAGE,
+            label: <FormattedMessage id="snowflakeBillingSourceAccountUsage" />,
+            dataTestId: "radio_snowflake_account_usage",
+          },
+          {
+            value: BILLING_SOURCE_VALUES.ORGANIZATION_USAGE,
+            label: <FormattedMessage id="snowflakeBillingSourceOrganizationUsage" />,
+            dataTestId: "radio_snowflake_organization_usage",
+          },
+        ]}
       />
     </>
   );

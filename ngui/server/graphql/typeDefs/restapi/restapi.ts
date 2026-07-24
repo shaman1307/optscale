@@ -37,6 +37,10 @@ export default gql`
     forecast: Float!
     last_month_cost: Float
     resources: Int!
+    total_cost: Float
+    total_resources: Int
+    billing_period_start: Int
+    billing_period_end: Int
   }
 
   interface DataSourceInterface {
@@ -293,6 +297,7 @@ export default gql`
     user: String
     role: String
     warehouse: String
+    billing_source: String
     cost_model: SnowflakeCostModelConfig
   }
 
@@ -467,9 +472,10 @@ export default gql`
   input SnowflakeConfigInput {
     account: String!
     user: String!
-    private_key: String!
+    private_key: String
     warehouse: String!
     role: String
+    billing_source: String
     cost_model: JSONObject
   }
 
@@ -562,6 +568,7 @@ export default gql`
     k8s_node
     k8s_namespace
     k8s_service
+    account_locator
   }
 
   input BreakdownParams {
@@ -589,6 +596,7 @@ export default gql`
     k8s_node: [String!]
     k8s_service: [String!]
     k8s_namespace: [String!]
+    account_locator: [String!]
   }
 
   type ResourceCountBreakdown {
@@ -678,6 +686,7 @@ export default gql`
     k8s_namespace: [String]
     k8s_node: [String]
     k8s_service: [String]
+    account_locator: [String]
     owner_id: [String]
     pool_id: [String]
     region: [String]
@@ -723,6 +732,7 @@ export default gql`
     k8s_node: [String!]
     k8s_service: [String!]
     k8s_namespace: [String!]
+    account_locator: [String!]
   }
 
   type BillingSubscriptionPlan {

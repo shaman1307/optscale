@@ -47,6 +47,7 @@ export type AlibabaDataSource = DataSourceInterface & {
 };
 
 export type AvailableFiltersParams = {
+  account_locator?: InputMaybe<Array<Scalars["String"]["input"]>>;
   active?: InputMaybe<Array<Scalars["Boolean"]["input"]>>;
   cloud_account_id?: InputMaybe<Array<Scalars["String"]["input"]>>;
   constraint_violated?: InputMaybe<Array<Scalars["Boolean"]["input"]>>;
@@ -239,6 +240,7 @@ export type BillingSubscriptionPlan = {
 export type BillingSubscriptionStatus = "active" | "limit_exceeded" | "suspended";
 
 export type BreakdownBy =
+  | "account_locator"
   | "cloud_account_id"
   | "employee_id"
   | "k8s_namespace"
@@ -250,6 +252,7 @@ export type BreakdownBy =
   | "service_name";
 
 export type BreakdownParams = {
+  account_locator?: InputMaybe<Array<Scalars["String"]["input"]>>;
   active?: InputMaybe<Array<Scalars["Boolean"]["input"]>>;
   breakdown_by: Scalars["String"]["input"];
   cloud_account_id?: InputMaybe<Array<Scalars["String"]["input"]>>;
@@ -277,6 +280,7 @@ export type BreakdownParams = {
 };
 
 export type CleanExpensesParams = {
+  account_locator?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   active?: InputMaybe<Array<InputMaybe<Scalars["Boolean"]["input"]>>>;
   cloud_account_id?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   constraint_violated?: InputMaybe<Array<InputMaybe<Scalars["Boolean"]["input"]>>>;
@@ -332,11 +336,15 @@ export type CreateStripeCheckoutSessionInput = {
 
 export type DataSourceDetails = {
   __typename?: "DataSourceDetails";
+  billing_period_end?: Maybe<Scalars["Int"]["output"]>;
+  billing_period_start?: Maybe<Scalars["Int"]["output"]>;
   cost: Scalars["Float"]["output"];
   discovery_infos?: Maybe<Array<Maybe<DataSourceDiscoveryInfos>>>;
   forecast: Scalars["Float"]["output"];
   last_month_cost?: Maybe<Scalars["Float"]["output"]>;
   resources: Scalars["Int"]["output"];
+  total_cost?: Maybe<Scalars["Float"]["output"]>;
+  total_resources?: Maybe<Scalars["Int"]["output"]>;
 };
 
 export type DataSourceDiscoveryInfos = {
@@ -396,6 +404,7 @@ export type DatabricksConfig = {
 export type SnowflakeConfig = {
   __typename?: "SnowflakeConfig";
   account?: Maybe<Scalars["String"]["output"]>;
+  billing_source?: Maybe<Scalars["String"]["output"]>;
   cost_model?: Maybe<SnowflakeCostModelConfig>;
   role?: Maybe<Scalars["String"]["output"]>;
   user?: Maybe<Scalars["String"]["output"]>;
@@ -410,8 +419,9 @@ export type SnowflakeCostModelConfig = {
 
 export type SnowflakeConfigInput = {
   account: Scalars["String"]["input"];
+  billing_source?: InputMaybe<Scalars["String"]["input"]>;
   cost_model?: InputMaybe<Scalars["JSONObject"]["input"]>;
-  private_key: Scalars["String"]["input"];
+  private_key?: InputMaybe<Scalars["String"]["input"]>;
   role?: InputMaybe<Scalars["String"]["input"]>;
   user: Scalars["String"]["input"];
   warehouse: Scalars["String"]["input"];
@@ -1243,6 +1253,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: { __typename?: "AlibabaConfig"; access_key_id?: string | null } | null;
       }
@@ -1266,6 +1278,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: {
           __typename?: "AwsConfig";
@@ -1302,6 +1316,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: {
           __typename?: "AzureSubscriptionConfig";
@@ -1334,6 +1350,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: { __typename?: "AzureTenantConfig"; client_id?: string | null; tenant?: string | null } | null;
       }
@@ -1357,6 +1375,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: { __typename?: "DatabricksConfig"; account_id?: string | null; client_id?: string | null } | null;
       }
@@ -1380,6 +1400,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
       }
     | {
@@ -1402,6 +1424,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: {
           __typename?: "GcpConfig";
@@ -1439,6 +1463,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: {
           __typename?: "GcpTenantConfig";
@@ -1476,6 +1502,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: {
           __typename?: "K8sConfig";
@@ -1504,6 +1532,8 @@ export type DataSourcesQuery = {
           resources: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
         } | null;
         config?: {
           __typename?: "NebiusConfig";
@@ -1546,6 +1576,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1582,6 +1614,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1631,6 +1665,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1676,6 +1712,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1712,6 +1750,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1748,6 +1788,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1783,6 +1825,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1833,6 +1877,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1883,6 +1929,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -1924,6 +1972,8 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
           resources: number;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
@@ -2542,6 +2592,7 @@ export const SnowflakeDataSourceConfigFragmentFragmentDoc = gql`
       user
       role
       warehouse
+      billing_source
       cost_model {
         credit_price
         storage_price_per_tb_month
@@ -2832,6 +2883,10 @@ export const DataSourcesDocument = gql`
         resources
         forecast
         last_month_cost
+        total_cost
+        total_resources
+        billing_period_start
+        billing_period_end
       }
       ...AwsDataSourceConfigFragment
       ...AzureTenantDataSourceConfigFragment
@@ -2938,6 +2993,10 @@ export const DataSourceDocument = gql`
         forecast
         last_month_cost
         resources
+        total_cost
+        total_resources
+        billing_period_start
+        billing_period_end
       }
       ...AwsDataSourceConfigFragment
       ...AzureTenantDataSourceConfigFragment

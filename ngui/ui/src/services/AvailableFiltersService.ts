@@ -22,6 +22,7 @@ import {
   K8S_NAMESPACE_FILTER,
   POOL_ID_FILTER,
   K8S_SERVICE_FILTER,
+  ACCOUNT_LOCATOR_FILTER,
   NETWORK_TRAFFIC_FROM_FILTER,
   NETWORK_TRAFFIC_TO_FILTER,
   EMPTY_UUID,
@@ -54,6 +55,7 @@ export const mapAvailableFilterKeys = (params) => ({
   k8s_node: params[K8S_NODE_FILTER],
   k8s_service: params[K8S_SERVICE_FILTER],
   k8s_namespace: params[K8S_NAMESPACE_FILTER],
+  account_locator: params[ACCOUNT_LOCATOR_FILTER],
 });
 
 export const mapFiltersToApiParams = (filters) => {
@@ -91,6 +93,7 @@ export const mapFiltersToApiParams = (filters) => {
     k8s_node: filters.k8s_node?.map(getObjectValue("name")),
     k8s_service: filters.k8s_service?.map(getObjectValue("name")),
     k8s_namespace: filters.k8s_namespace?.map(getObjectValue("name")),
+    account_locator: filters.account_locator?.map(getObjectValue("name")),
   };
 };
 

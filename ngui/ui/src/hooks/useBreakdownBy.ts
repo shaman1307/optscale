@@ -27,6 +27,11 @@ const k8sNamespaceBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BR
 
 const k8sServiceBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_SERVICE, "k8sService");
 
+const accountLocatorBreakdown = getBreakdownDefinition(
+  RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.ACCOUNT_LOCATOR,
+  "accountLocator"
+);
+
 export const breakdowns = Object.freeze([
   serviceNameBreakdown,
   regionBreakdown,
@@ -34,6 +39,7 @@ export const breakdowns = Object.freeze([
   dataSourceBreakdown,
   ownerBreakdown,
   poolBreakdown,
+  accountLocatorBreakdown,
   k8sNodeBreakdown,
   k8sNamespaceBreakdown,
   k8sServiceBreakdown,
