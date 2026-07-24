@@ -50,8 +50,10 @@ class ReportImportBaseController(BaseController):
 
     def check_unprocessed_imports(self, cloud_account_id):
         dt = opttime.utcnow().timestamp()
+        report_imports_setting = (
+            self._config.report_imports_setting() or {})
         scheduled_threshold = dt - int(
-            self._config.report_imports_setting().get(
+            report_imports_setting.get(
                 'not_processed_threshold_secs',
                 DEFAULT_NOT_PROCESSED_REPORT_THRESHOLD_SECONDS
             )
@@ -150,8 +152,10 @@ class ReportImportBaseController(BaseController):
             transport_options=self.RETRY_POLICY)
 
         task_exchange = Exchange('billing-reports', type='direct')
+        report_imports_setting = (
+            self._config.report_imports_setting() or {})
         expiration = float(
-            self._config.report_imports_setting().get(
+            report_imports_setting.get(
                 'message_expiration_secs',
                 DEFAULT_QUEUE_MESSAGE_EXPIRATION_SECONDS
             )

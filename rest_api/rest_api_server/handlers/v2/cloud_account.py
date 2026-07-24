@@ -220,6 +220,10 @@ class CloudAccountAsyncCollectionHandler(BaseAsyncCollectionHandler,
                                                 description: total cost in last month}
                                             resources: {type: integer,
                                                 description: number of tracked resources}
+                                            total_cost: {type: number,
+                                                description: all-time total cost}
+                                            total_resources: {type: integer,
+                                                description: all-time resource count}
                                             discovery_infos:
                                                 type: object
                                                 properties:
@@ -370,6 +374,10 @@ class CloudAccountAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
                                     description: total cost in last month}
                                 resources: {type: integer,
                                     description: number of resources}
+                                total_cost: {type: number,
+                                    description: all-time total cost}
+                                total_resources: {type: integer,
+                                    description: all-time resource count}
                                 discovery_infos:
                                     type: object
                                     properties:

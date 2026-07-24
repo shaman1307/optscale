@@ -79,7 +79,7 @@ class AvailableFiltersController(CleanExpenseController):
                         i: entity[i] for i in fields
                     } if entity else key
             for field in ['service_name', 'region', 'k8s_node',
-                          'k8s_service', 'k8s_namespace']:
+                          'k8s_service', 'k8s_namespace', 'account_locator']:
                 r_keys = r.pop(field, {})
                 for r_key in r_keys:
                     if r_key not in result[field]:
@@ -203,7 +203,8 @@ class AvailableFiltersController(CleanExpenseController):
         last_recommend_run = kwargs['last_recommend_run']
         collected_filters = [
             'service_name', 'pool_id', 'employee_id', 'k8s_node', 'region',
-            'resource_type', 'k8s_namespace', 'k8s_service', 'cloud_account_id'
+            'resource_type', 'k8s_namespace', 'k8s_service', 'account_locator',
+            'cloud_account_id'
         ]
         group_stage = {
             f: {'$addToSet': {'$ifNull': ['$%s' % f, None]}}

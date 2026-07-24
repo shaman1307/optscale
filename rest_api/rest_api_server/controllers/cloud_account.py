@@ -550,6 +550,17 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                  kwargs, bool(config))
         if cloud_acc_obj.parent_id and config:
             raise WrongArgumentsException(Err.OE0211, ['config'])
+        # Keep existing secrets when update payload omits or clears them
+        # (e.g. Snowflake private_key — re-pasting PEM on every edit is painful).
+        if config:
+            for param in adapter_cls.BILLING_CREDS:
+                if not param.protected or param.readonly:
+                    continue
+                if config.get(param.name):
+                    continue
+                old_value = old_config.get(param.name)
+                if old_value:
+                    config[param.name] = old_value
         if cloud_acc_type in [CloudTypes.AWS_CNR.value]:
             has_assumed_role_data = bool(
                 config.get('assume_role_account_id') or config.get('assume_role_name')
@@ -730,6 +741,9 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         discovery_infos = self._get_discovery_infos([cloud_acc_id])
         first_expenses = expense_ctrl.get_first_expenses_for_forecast(
             'cloud_account_id', [cloud_acc_id])
+        total_costs = expense_ctrl.get_total_costs([cloud_acc_id])
+        total_resources = expense_ctrl.get_total_resource_counts(
+            [cloud_acc_id])
         details = {
             'last_month_cost': last_month_total['cost'],
             'cost': month_expenses['cost'],
@@ -737,8 +751,17 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                 last_month_total['cost'] + month_expenses['cost'],
                 month_expenses['cost'], first_expenses.get(cloud_acc_id)),
             'resources': month_expenses['count'],
+            'total_cost': total_costs.get(cloud_acc_id, 0),
+            'total_resources': total_resources.get(cloud_acc_id, 0),
             'discovery_infos': discovery_infos.get(cloud_acc_id, [])
         }
+        cloud_acc = super().get(cloud_acc_id)
+        if cloud_acc and cloud_acc.type == CloudTypes.SNOWFLAKE:
+            ranges = expense_ctrl.get_expense_date_ranges([cloud_acc_id])
+            period = ranges.get(cloud_acc_id)
+            if period:
+                details['billing_period_start'] = period[0]
+                details['billing_period_end'] = period[1]
         return details
 
     def _get_discovery_infos(self, cloud_acc_ids):
@@ -847,6 +870,17 @@ class CloudAccountController(BaseController, ClickHouseMixin):
 
         result = {}
         discovery_infos = self._get_discovery_infos(cloud_acc_ids)
+        total_costs = (
+            expense_ctrl.get_total_costs(cloud_acc_ids)
+            if cloud_acc_ids else {})
+        total_resources = (
+            expense_ctrl.get_total_resource_counts(cloud_acc_ids)
+            if cloud_acc_ids else {})
+        snowflake_ids = [
+            acc.id for acc in cloud_accounts
+            if acc.type == CloudTypes.SNOWFLAKE]
+        billing_periods = expense_ctrl.get_expense_date_ranges(
+            snowflake_ids) if snowflake_ids else {}
         for acc in cloud_accounts:
             default = {'cost': 0, 'count': 0}
             current_stats = month_expenses.get(acc.id, default)
@@ -858,9 +892,15 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                     last_stats['cost'] + current_stats['cost'],
                     current_stats['cost'], first_expenses.get(acc.id)),
                 'resources': current_stats['count'],
+                'total_cost': total_costs.get(acc.id, 0),
+                'total_resources': total_resources.get(acc.id, 0),
                 'last_month_cost': last_stats['cost'],
                 'discovery_infos': discovery_infos.get(acc.id, {})
             }
+            period = billing_periods.get(acc.id)
+            if period:
+                result[acc.id]['details']['billing_period_start'] = period[0]
+                result[acc.id]['details']['billing_period_end'] = period[1]
         return list(result.values())
 
     def get_employee(self, user_id, org_id):

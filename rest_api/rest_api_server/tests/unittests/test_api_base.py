@@ -57,6 +57,12 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
         secret = self.gen_id()
         patch('optscale_client.config_client.client.Client.cluster_secret',
               return_value=secret).start()
+        # Snowflake hardening calls check_unprocessed_imports on create;
+        # unit tests have no etcd-backed report_imports_setting.
+        patch(
+            'optscale_client.config_client.client.Client.report_imports_setting',
+            return_value={},
+        ).start()
         patch('rest_api.rest_api_server.utils._get_encryption_salt',
               return_value='test_encryption_salt').start()
         self.p_auth_users = patch(

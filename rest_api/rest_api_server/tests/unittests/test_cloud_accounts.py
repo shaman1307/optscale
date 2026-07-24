@@ -75,6 +75,21 @@ class TestCloudAccountApi(TestApiBase):
                 'account_id': 'databricks_account_id'
             }
         }
+        self.valid_snowflake_cloud_acc = {
+            'name': 'snowflake cloud_acc',
+            'type': 'snowflake',
+            'config': {
+                'account': 'PUBLICIS-PROD',
+                'user': 'svc_optscale',
+                'private_key': (
+                    '-----BEGIN PRIVATE KEY-----\n'
+                    'MIIEvQIBADANBgkq\n'
+                    '-----END PRIVATE KEY-----'),
+                'role': 'ACCOUNTADMIN',
+                'warehouse': 'COMPUTE_WH',
+                'billing_source': 'account_usage',
+            }
+        }
         self.p_configure_aws = patch(
             'tools.cloud_adapter.clouds.aws.Aws.configure_report').start()
         self.p_configure_azure = patch(
@@ -2446,6 +2461,83 @@ class TestCloudAccountApi(TestApiBase):
         code, cost_model = self.client.sku_cost_model_get(cloud_acc['id'])
         self.assertEqual(code, 200)
         self.assertEqual(cost_model['value'], config['cost_model'])
+
+    def test_valid_snowflake(self):
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'HW44440', 'warnings': []
+            }).start()
+        code, _ = self.client.cloud_account_verify(
+            self.valid_snowflake_cloud_acc)
+        self.assertEqual(code, 200)
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_snowflake_cloud_acc)
+        self.assertEqual(code, 201)
+        self.assertEqual(cloud_acc['account_id'], 'HW44440')
+        self.assertEqual(cloud_acc['type'], 'snowflake')
+        self.assertEqual(cloud_acc['config']['account'], 'PUBLICIS-PROD')
+        self.assertEqual(cloud_acc['config']['billing_source'], 'account_usage')
+        self.assertNotIn('private_key', cloud_acc['config'])
+        self.assertIn('cost_model', cloud_acc['config'])
+
+    def test_snowflake_verify_config(self):
+        credentials = self.valid_snowflake_cloud_acc.copy()
+        credentials.pop('type')
+        code, response = self.client.cloud_account_verify(credentials)
+        self.assertEqual(code, 400)
+        self.assertEqual(response['error']['reason'],
+                         'type is not provided')
+
+        broken = deepcopy(self.valid_snowflake_cloud_acc)
+        broken['config'].pop('private_key')
+        code, response = self.client.cloud_account_verify(broken)
+        self.assertEqual(code, 400)
+        self.assertEqual(response['error']['reason'],
+                         'private_key is not provided')
+
+    def test_snowflake_organization_usage(self):
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'CP81654', 'warnings': []
+            }).start()
+        body = deepcopy(self.valid_snowflake_cloud_acc)
+        body['name'] = 'snowflake org'
+        body['config']['billing_source'] = 'organization_usage'
+        body['config']['account'] = 'PUBLICIS-ADMIN'
+        code, cloud_acc = self.create_cloud_account(self.org_id, body)
+        self.assertEqual(code, 201)
+        self.assertEqual(
+            cloud_acc['config']['billing_source'], 'organization_usage')
+
+    def test_snowflake_patch_cost_model(self):
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'HW44440', 'warnings': []
+            }).start()
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_snowflake_cloud_acc)
+        self.assertEqual(code, 201)
+        config = {
+            'account': 'PUBLICIS-PROD',
+            'user': 'svc_optscale',
+            'role': 'ACCOUNTADMIN',
+            'warehouse': 'COMPUTE_WH',
+            'billing_source': 'account_usage',
+            'cost_model': {
+                'credit_price': 3.5,
+                'storage_price_per_tb_month': 23.0,
+            },
+        }
+        code, ret = self.client.cloud_account_update(
+            cloud_acc['id'], {'config': config})
+        self.assertEqual(code, 200)
+        self.assertEqual(ret['config']['cost_model']['credit_price'], 3.5)
+        code, cost_model = self.client.sku_cost_model_get(cloud_acc['id'])
+        self.assertEqual(code, 200)
+        self.assertEqual(cost_model['value']['credit_price'], 3.5)
 
     def test_adapter_implemented(self):
         for t in list(CloudTypes):

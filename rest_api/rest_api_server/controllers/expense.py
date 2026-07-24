@@ -2,7 +2,7 @@ import json
 import logging
 import re
 from calendar import monthrange
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from tools.optscale_exceptions.common_exc import (
     FailedDependency, NotFoundException, WrongArgumentsException)
@@ -138,6 +138,91 @@ class ExpenseController(MongoMixin, ClickHouseMixin):
 
     def get_first_expenses_for_forecast(self, field, values):
         return self.query.get_first_expenses_for_forecast(field, values)
+
+    @staticmethod
+    def _clickhouse_date_to_timestamp(value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.timestamp())
+        return int(datetime(
+            value.year, value.month, value.day,
+            tzinfo=timezone.utc).timestamp())
+
+    def get_expense_date_ranges(self, cloud_account_ids):
+        """Return {cloud_account_id: (start_ts, end_ts)} from ClickHouse."""
+        if not cloud_account_ids:
+            return {}
+        rows = self.execute_clickhouse(
+            query="""
+                SELECT
+                    cloud_account_id,
+                    min(date) AS min_date,
+                    max(date) AS max_date
+                FROM expenses
+                WHERE cloud_account_id IN %(cloud_account_ids)s
+                GROUP BY cloud_account_id
+                HAVING sum(sign) > 0
+            """,
+            parameters={
+                'cloud_account_ids': list(cloud_account_ids),
+            },
+        )
+        result = {}
+        for cloud_account_id, min_date, max_date in rows:
+            start_ts = self._clickhouse_date_to_timestamp(min_date)
+            end_ts = self._clickhouse_date_to_timestamp(max_date)
+            if start_ts is None or end_ts is None:
+                continue
+            result[cloud_account_id] = (start_ts, end_ts)
+        return result
+
+    def get_total_costs(self, cloud_account_ids):
+        """Return {cloud_account_id: all-time cost} from ClickHouse."""
+        if not cloud_account_ids:
+            return {}
+        rows = self.execute_clickhouse(
+            query="""
+                SELECT
+                    cloud_account_id,
+                    sum(cost * sign) AS total_cost
+                FROM expenses
+                WHERE cloud_account_id IN %(cloud_account_ids)s
+                GROUP BY cloud_account_id
+            """,
+            parameters={
+                'cloud_account_ids': list(cloud_account_ids),
+            },
+        )
+        return {
+            cloud_account_id: float(total_cost or 0)
+            for cloud_account_id, total_cost in rows
+        }
+
+    def get_total_resource_counts(self, cloud_account_ids):
+        """Return {cloud_account_id: resource count} from Mongo resources."""
+        if not cloud_account_ids:
+            return {}
+        pipeline = [
+            {
+                '$match': {
+                    'cloud_account_id': {'$in': list(cloud_account_ids)},
+                    'deleted_at': 0,
+                }
+            },
+            {
+                '$group': {
+                    '_id': '$cloud_account_id',
+                    'count': {'$sum': 1},
+                }
+            },
+        ]
+        return {
+            row['_id']: int(row.get('count') or 0)
+            for row in self.resources_collection.aggregate(pipeline)
+        }
 
     def get_raw_expenses(self, start_date, end_date, filters):
         match_filters = [{'start_date': {'$lt': end_date}}]
@@ -955,8 +1040,8 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
 
         extra = {'active', 'recommendations', 'constraint_violated',
                  'service_name', 'created_by_kind', 'created_by_name',
-                 'k8s_namespace', 'k8s_node', 'k8s_service', 'traffic_from',
-                 'traffic_to', 'first_seen_lte', 'first_seen_gte',
+                 'k8s_namespace', 'k8s_node', 'k8s_service', 'account_locator',
+                 'traffic_from', 'traffic_to', 'first_seen_lte', 'first_seen_gte',
                  'last_seen_lte', 'last_seen_gte'}
         other_filters = {}
         for f_key in extra:
@@ -1131,7 +1216,8 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
 
         for string_field in [
             'service_name', 'created_by_kind', 'created_by_name',
-            'k8s_namespace', 'k8s_node', 'k8s_service', 'cloud_resource_id'
+            'k8s_namespace', 'k8s_node', 'k8s_service', 'account_locator',
+            'cloud_resource_id'
         ]:
             name_set = data_filters.get(string_field)
             if name_set is not None:
