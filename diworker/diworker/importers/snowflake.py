@@ -15,9 +15,6 @@ LOG = logging.getLogger(__name__)
 # Larger chunks cut Mongo round-trips on high-volume collectors
 # (e.g. AUTOMATIC_CLUSTERING after daily aggregation).
 CHUNK_SIZE = 2000
-# Billing reimport windows longer than this soft-delete all resources so they
-# are recreated with current ids/tag keys (base64).
-FULL_REIMPORT_DAYS = 5
 META_FIELDS = [
     'service_category', 'service_type', 'account_name',
     'region', 'model_name', 'function_name', 'query_id', 'user_id',
@@ -95,9 +92,6 @@ class SnowflakeReportImporter(BaseReportImporter):
         self.period_start = self.period_start - timedelta(days=2)
         self.remove_raw_expenses_from_period_start(self.cloud_acc_id)
         self._clear_clickhouse_expenses_from_period_start()
-        # Full reimport: remember to drop resources that do not come back.
-        self._full_reimport = (
-            (opttime.utcnow() - self.period_start).days >= FULL_REIMPORT_DAYS)
 
     def _clear_clickhouse_expenses_from_period_start(self):
         from_dt = self.period_start
@@ -273,9 +267,7 @@ class SnowflakeReportImporter(BaseReportImporter):
                 continue
             update = {
                 'resource_type': resource_type,
-                # Reimport soft-deletes all resources first; resurrect those
-                # that appear again so skip_existing + include_deleted cannot
-                # leave the account empty.
+                # Resurrect if a prior bad orphan-cleanup soft-deleted the row.
                 'deleted_at': 0,
             }
             if info.get('name'):
@@ -308,41 +300,10 @@ class SnowflakeReportImporter(BaseReportImporter):
             ))
         if bulk:
             self.mongo_resources.bulk_write(bulk, ordered=False)
+        # Only drop known legacy cloud_resource_id shapes superseded by
+        # current collectors — never wipe resources missing from this window.
         self._soft_delete_legacy_resources(cloud_account_id, unique_id_field)
-        # Accumulate ids across clean-expense chunks; orphans dropped in cleanup.
-        seen = getattr(self, '_seen_resource_ids', None)
-        if seen is None:
-            self._seen_resource_ids = set()
-            seen = self._seen_resource_ids
-        seen.update(resources_info_map.keys())
         return resources
-
-    def cleanup(self):
-        super().cleanup()
-        if (getattr(self, '_full_reimport', False)
-                and getattr(self, '_seen_resource_ids', None)):
-            self._soft_delete_orphan_resources(
-                self.cloud_acc_id, self._seen_resource_ids)
-            self._seen_resource_ids = set()
-
-    def _soft_delete_orphan_resources(
-            self, cloud_account_id, keep_ids, unique_id_field='cloud_resource_id'):
-        """After full reimport, drop active resources not seen in this load."""
-        if not keep_ids:
-            return
-        now = int(opttime.utcnow().timestamp())
-        result = self.mongo_resources.update_many(
-            {
-                'cloud_account_id': cloud_account_id,
-                'deleted_at': 0,
-                unique_id_field: {'$nin': list(keep_ids)},
-            },
-            {'$set': {'deleted_at': now}},
-        )
-        if result.modified_count:
-            LOG.info(
-                'Soft-deleted %s orphan Snowflake resources for %s',
-                result.modified_count, cloud_account_id)
 
     def _soft_delete_legacy_resources(
             self, cloud_account_id, unique_id_field='cloud_resource_id'):

@@ -44,12 +44,28 @@ GRANT USAGE ON WAREHOUSE INFRASTRUCTURE_TEST_WH TO ROLE ACCOUNTADMIN;
 
 Import period is the same scheduler cadence as other sources (typically 6h). First import looks back ~90 days; later runs rewind ~2 days for late-arriving rows.
 
-## Account locator
+### Reimport behavior
+
+A billing reimport (or any run after moving `last_import_at` backward) does **not** wipe the resource catalog for the account.
+
+- **Expenses** (Mongo raw + ClickHouse) for the chosen window are cleared and reloaded.
+- **Resources** are created or updated in place (`cloud_resource_id` is stable for Snowflake collectors).
+- Resources that simply had **no usage in that window** stay as they are (no “orphan” soft-delete).
+- The only automatic resource soft-delete is for **known legacy id shapes** left over from earlier OptScale id/schema renames (old `…/stages`, old Cortex id patterns). Snowflake itself does not re-key the same object under a new locator-based id.
+
+## Account locator and account name
 
 Snowflake **account locator** (for example `HW44440`, `CP81654`) is stored on each resource as a first-class field `account_locator`. It is the stable account id from usage rows (not the OptScale data source name).
 
-Where it appears in the UI:
+**Account name** (for example `PUBLICIS_PROD`) is loaded with it:
 
+- From per-row `ACCOUNT_NAME` on `ORGANIZATION_USAGE` views, and
+- From `SNOWFLAKE.ORGANIZATION_USAGE.ACCOUNTS` (locator → name map) so every member account on an org source gets a name, not only the admin session account.
+- On `account_usage`, from `CURRENT_ACCOUNT_NAME()` when the view has no name column.
+
+Where they appear in the UI:
+
+- **Resources** table → column **Account locator** (name on top, locator below when both exist)
 - **Resources** → filters → **Account locator**
 - **Resources / Expenses (META)** → **Categorize by** → **Account locator**
 - Available-filters API / breakdowns that expose `account_locator`
