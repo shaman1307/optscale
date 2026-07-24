@@ -1,16 +1,19 @@
 #!/usr/bin/env python
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from tools.cloud_adapter.clouds.snowflake import (
     WarehouseMeteringCollector,
     AutomaticClusteringCollector,
+    ListingConsumptionCollector,
     apply_product_tag,
     calculate_cost,
     parse_metrics,
     year_quarter,
     _cortex_code_resource,
+    _row_account_name,
+    enrich_account_name,
 )
 
 
@@ -42,40 +45,117 @@ class TestSnowflakeHelpers(unittest.TestCase):
             year_quarter(datetime(2026, 1, 1, tzinfo=timezone.utc)),
             '2026Q1')
 
+    def test_row_account_name(self):
+        self.assertEqual(
+            _row_account_name({'account_name': 'PUBLICIS_PROD'}),
+            'PUBLICIS_PROD')
+        self.assertEqual(
+            _row_account_name({}, 'SESSION_ACC'),
+            'SESSION_ACC')
+        self.assertIsNone(_row_account_name({}))
+        self.assertIsNone(_row_account_name({'account_name': '  '}))
+
+    def test_enrich_account_name_from_org_map(self):
+        account_map = {'HW44440': 'PUBLICIS_PROD', 'CP81654': 'PUBLICIS_ADMIN'}
+        # Row already has member name — keep it and learn into map.
+        row = {'account_locator': 'HW44440', 'account_name': 'PUBLICIS_PROD'}
+        enrich_account_name(
+            row, account_map, billing_source='organization_usage')
+        self.assertEqual(row['account_name'], 'PUBLICIS_PROD')
+        # Locator only — fill from org ACCOUNTS map (not session admin).
+        row2 = {'account_locator': 'KD54336'}
+        account_map['KD54336'] = 'PUBLICIS_OTHER'
+        enrich_account_name(
+            row2, account_map, session_account_name='PUBLICIS_ADMIN',
+            billing_source='organization_usage')
+        self.assertEqual(row2['account_name'], 'PUBLICIS_OTHER')
+        # Org must not fall back to session admin for unknown locators.
+        row3 = {'account_locator': 'UNKNOWN01'}
+        enrich_account_name(
+            row3, account_map, session_account_name='PUBLICIS_ADMIN',
+            billing_source='organization_usage')
+        self.assertIsNone(row3.get('account_name'))
+
     def test_apply_product_tag(self):
         product_map = {
-            ('BILLING_WH', 'COMPUTE'): 'Core Infrastructure',
-            ('CLIENT_DATAMART_PROD', 'AUTOMATIC_CLUSTERING'): 'Client Datamart',
-            ('SNOWPIPE', 'SNOWPIPE'): 'Core Infrastructure',
-            ('AI_SERVICES', 'AI_SERVICES'): 'Core Infrastructure',
-            ('STAGE', 'STORAGE'): 'Core Infrastructure',
+            ('BILLING_WH', 'COMPUTE', '2026Q2'): 'Core Infrastructure',
+            ('CLIENT_DATAMART_PROD', 'AUTOMATIC_CLUSTERING', '2026Q3'): (
+                'Client Datamart'),
+            ('SNOWPIPE', 'SNOWPIPE', '2026Q2'): 'Core Infrastructure',
+            ('AI_SERVICES', 'AI_SERVICES', '2026Q2'): 'Core Infrastructure',
+            ('STAGE', 'STORAGE', '2026Q2'): 'Core Infrastructure',
         }
         compute = {
             'service_type': 'COMPUTE',
             'resource_name': 'BILLING_WH',
+            'start_date': datetime(2026, 4, 15, tzinfo=timezone.utc),
         }
         apply_product_tag(compute, product_map)
         self.assertEqual(compute['tag'], 'Core Infrastructure')
+
+        # Billing in Q1 has no mapping row → no tag.
+        compute_old = {
+            'service_type': 'COMPUTE',
+            'resource_name': 'BILLING_WH',
+            'start_date': datetime(2026, 1, 10, tzinfo=timezone.utc),
+        }
+        apply_product_tag(compute_old, product_map)
+        self.assertNotIn('tag', compute_old)
 
         clustering = {
             'service_type': 'AUTOMATIC_CLUSTERING',
             'database_name': 'CLIENT_DATAMART_PROD',
             'resource_name': 'CLIENT_DATAMART_PROD.SCHEMA.TABLE',
+            'start_date': datetime(2026, 7, 1, tzinfo=timezone.utc),
         }
         apply_product_tag(clustering, product_map)
         self.assertEqual(clustering['tag'], 'Client Datamart')
 
-        pipe = {'service_type': 'SNOWPIPE', 'resource_name': 'my_pipe'}
+        pipe = {
+            'service_type': 'SNOWPIPE',
+            'resource_name': 'my_pipe',
+            'start_date': datetime(2026, 5, 1, tzinfo=timezone.utc),
+        }
         apply_product_tag(pipe, product_map)
         self.assertEqual(pipe['tag'], 'Core Infrastructure')
 
-        ai = {'service_type': 'AI_SERVICES', 'resource_name': 'model-x'}
+        ai = {
+            'service_type': 'AI_SERVICES',
+            'resource_name': 'model-x',
+            'start_date': datetime(2026, 6, 1, tzinfo=timezone.utc),
+        }
         apply_product_tag(ai, product_map)
         self.assertEqual(ai['tag'], 'Core Infrastructure')
 
-        stage = {'service_type': 'STAGE', 'resource_name': 'STAGE'}
+        stage = {
+            'service_type': 'STAGE',
+            'resource_name': 'STAGE',
+            'start_date': datetime(2026, 4, 1, tzinfo=timezone.utc),
+        }
         apply_product_tag(stage, product_map)
         self.assertEqual(stage['tag'], 'Core Infrastructure')
+
+        # Org multi-account: mapping is keyed by account_locator.
+        org_map = {
+            ('HW44440', 'BILLING_WH', 'COMPUTE', '2026Q2'): 'Client Datamart',
+            ('CP81654', 'BILLING_WH', 'COMPUTE', '2026Q2'): 'Core Infrastructure',
+        }
+        hw = {
+            'service_type': 'COMPUTE',
+            'resource_name': 'BILLING_WH',
+            'account_locator': 'HW44440',
+            'start_date': datetime(2026, 4, 15, tzinfo=timezone.utc),
+        }
+        apply_product_tag(hw, org_map)
+        self.assertEqual(hw['tag'], 'Client Datamart')
+        cp = {
+            'service_type': 'COMPUTE',
+            'resource_name': 'BILLING_WH',
+            'account_locator': 'CP81654',
+            'start_date': datetime(2026, 4, 15, tzinfo=timezone.utc),
+        }
+        apply_product_tag(cp, org_map)
+        self.assertEqual(cp['tag'], 'Core Infrastructure')
 
     def test_cortex_code_resource_uses_user_name(self):
         resource_id, resource_name = _cortex_code_resource(
@@ -124,12 +204,16 @@ class TestSnowflakeHelpers(unittest.TestCase):
 
 
 class TestSnowflakeReconcile(unittest.TestCase):
-    def test_reconcile_warns_on_large_delta(self):
+    def _org_adapter(self):
         from tools.cloud_adapter.clouds.snowflake import Snowflake
-        adapter = Snowflake({
+        return Snowflake({
             'account': 'a', 'user': 'u', 'private_key': 'k',
             'warehouse': 'w',
+            'billing_source': 'organization_usage',
         })
+
+    def test_reconcile_warns_on_large_delta(self):
+        adapter = self._org_adapter()
         # Window must exceed RECONCILE_LAG_DAYS (2).
         start = datetime(2026, 6, 1, tzinfo=timezone.utc)
         end = datetime(2026, 6, 10, tzinfo=timezone.utc)
@@ -157,11 +241,7 @@ class TestSnowflakeReconcile(unittest.TestCase):
         self.assertEqual(details['reconciliation'][0]['delta_pct'], 50.0)
 
     def test_reconcile_skips_short_window(self):
-        from tools.cloud_adapter.clouds.snowflake import Snowflake
-        adapter = Snowflake({
-            'account': 'a', 'user': 'u', 'private_key': 'k',
-            'warehouse': 'w',
-        })
+        adapter = self._org_adapter()
         start = datetime(2026, 6, 8, tzinfo=timezone.utc)
         end = datetime(2026, 6, 10, tzinfo=timezone.utc)
         cursor = MagicMock()
@@ -171,6 +251,46 @@ class TestSnowflakeReconcile(unittest.TestCase):
         cursor.execute.assert_not_called()
         details = adapter.get_import_details()
         self.assertEqual(details['reconciliation'][0]['status'], 'skipped')
+
+    def test_reconcile_skips_partial_first_day(self):
+        """Incremental imports start mid-day; that day must not be compared."""
+        adapter = self._org_adapter()
+        # start mid-day 06-01 → first full reconcile day is 06-02.
+        start = datetime(2026, 6, 1, 23, 3, 31, tzinfo=timezone.utc)
+        end = datetime(2026, 6, 10, tzinfo=timezone.utc)
+        partial_day = start.date()
+        full_day = partial_day + timedelta(days=1)
+        cursor = MagicMock()
+        cursor.description = [
+            ('SERVICE_TYPE',), ('USAGE_DATE',),
+            ('CREDITS_USED_COMPUTE',), ('CREDITS_USED_CLOUD_SERVICES',),
+            ('CREDITS_BILLED',),
+        ]
+        cursor.__iter__ = MagicMock(return_value=iter([
+            # Full first calendar day in daily would create a false mismatch
+            # if included; only the next day should be compared.
+            ('WAREHOUSE_METERING', partial_day, 1456.0, 0.0, 1456.0),
+            ('WAREHOUSE_METERING', full_day, 50.0, 0.0, 50.0),
+        ]))
+        with patch(
+                'tools.cloud_adapter.clouds.snowflake.load_sql',
+                return_value='SELECT 1'):
+            warnings = adapter._reconcile_credits(
+                cursor, start, end,
+                {
+                    ('COMPUTE', partial_day): 0.0,
+                    ('COMPUTE', full_day): 50.0,
+                })
+        self.assertEqual(warnings, [])
+        details = adapter.get_import_details()
+        row = details['reconciliation'][0]
+        self.assertEqual(row['status'], 'ok')
+        self.assertEqual(row['detail'], 50.0)
+        self.assertEqual(row['daily'], 50.0)
+        self.assertEqual(row['window_start'], str(full_day))
+        # Daily query must start at the first full day, not the partial one.
+        self.assertEqual(
+            cursor.execute.call_args.args[1][0], full_day)
 
 
 class TestSnowflakeConnect(unittest.TestCase):
@@ -251,6 +371,87 @@ class TestAutomaticClusteringCollector(unittest.TestCase):
         self.assertEqual(rows[0]['service_type'], 'AUTOMATIC_CLUSTERING')
         self.assertEqual(rows[0]['database_name'], 'DB1')
         self.assertEqual(rows[0]['credits_used'], 0.5)
+
+
+class TestListingConsumptionCollector(unittest.TestCase):
+    def test_fetch_normalizes_rows_and_zero_cost(self):
+        event_date = datetime(2026, 7, 1).date()
+        start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        cursor = MagicMock()
+        cursor.description = [
+            ('EVENT_DATE',), ('EXCHANGE_NAME',), ('SNOWFLAKE_REGION',),
+            ('LISTING_NAME',), ('LISTING_DISPLAY_NAME',),
+            ('LISTING_GLOBAL_NAME',), ('SHARE_NAME',),
+            ('CONSUMER_ACCOUNT_LOCATOR',), ('CONSUMER_ACCOUNT_NAME',),
+            ('CONSUMER_ORGANIZATION',), ('CONSUMER_NAME',),
+            ('JOBS',), ('UNIQUE_USERS_1D',), ('REGION_GROUP',),
+        ]
+        cursor.__iter__ = MagicMock(return_value=iter([
+            (event_date, 'ex', 'AWS_US_EAST_1', 'lst', 'My Listing',
+             'GZ123.LISTING', 'SHARE1', 'CONS01', 'cons_acc',
+             'org', 'Consumer Co', 42, 3, 'PUBLIC'),
+        ]))
+        with patch(
+                'tools.cloud_adapter.clouds.snowflake.load_sql',
+                return_value='SELECT 1'):
+            rows = list(ListingConsumptionCollector().fetch(
+                cursor, start, end, 'HW44440'))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]['resource_id'],
+            'HW44440/listing_consumption/GZ123.LISTING/SHARE1/CONS01')
+        self.assertEqual(rows[0]['service_type'], 'LISTING_CONSUMPTION')
+        self.assertEqual(rows[0]['jobs'], 42.0)
+        self.assertEqual(calculate_cost(rows[0], {}), 0.0)
+
+
+class TestNoDoubleCounting(unittest.TestCase):
+    def test_account_and_org_service_types_overlap_only_on_ai_group(self):
+        """Shared billing types must not appear on both billing sources.
+
+        ACCOUNT_USAGE may share the AI_SERVICES label across Cortex collectors
+        and LISTING_CONSUMPTION / READER_ACCOUNT; ORGANIZATION_USAGE owns
+        COMPUTE/STORAGE/etc. Intersection of exclusive sets should be empty
+        for billable org types.
+        """
+        from tools.cloud_adapter.clouds.snowflake import (
+            COLLECTORS_ACCOUNT_USAGE,
+            COLLECTORS_ORGANIZATION_USAGE,
+            ACCOUNT_USAGE_EXCLUSIVE_SERVICE_TYPES,
+        )
+        account_types = {
+            cls.SERVICE_TYPE for cls in COLLECTORS_ACCOUNT_USAGE}
+        org_types = {
+            cls.SERVICE_TYPE for cls in COLLECTORS_ORGANIZATION_USAGE}
+        overlap = account_types & org_types
+        self.assertEqual(
+            overlap, set(),
+            'billing sources must not share service_type labels: %s' % overlap)
+        self.assertIn('AI_SERVICES', ACCOUNT_USAGE_EXCLUSIVE_SERVICE_TYPES)
+        self.assertIn('LISTING_CONSUMPTION', account_types)
+        self.assertIn('COMPUTE', org_types)
+        self.assertNotIn('COMPUTE', account_types)
+        self.assertNotIn('AI_SERVICES', org_types)
+
+    def test_metering_daily_sql_excludes_dedicated_types(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            load_sql, BILLING_SOURCE_ORGANIZATION_USAGE)
+        sql = load_sql(
+            'metering_daily_history.sql',
+            BILLING_SOURCE_ORGANIZATION_USAGE).upper()
+        for token in (
+                'WAREHOUSE_METERING', 'PIPE', 'SNOWPIPE', 'AI_SERVICES',
+                'AUTO_CLUSTERING', 'DATABASE_STORAGE', 'STAGE', 'CORTEX'):
+            self.assertIn(token, sql)
+
+    def test_calculate_cost_prefers_billable_amount(self):
+        record = {
+            'billable_amount': 12.5,
+            'credits_used': 100,
+        }
+        self.assertEqual(
+            calculate_cost(record, {'credit_price': 3.0}), 12.5)
 
 
 class TestAggregateCollectors(unittest.TestCase):

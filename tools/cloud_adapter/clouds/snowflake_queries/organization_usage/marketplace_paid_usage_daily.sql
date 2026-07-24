@@ -1,4 +1,5 @@
 SELECT
+    COALESCE(consumer_account_locator, provider_account_locator) AS account_locator,
     usage_date,
     report_date,
     provider_name,
@@ -12,7 +13,7 @@ SELECT
     unit_price,
     charge,
     currency
-FROM SNOWFLAKE.DATA_SHARING_USAGE.MARKETPLACE_PAID_USAGE_DAILY
+FROM SNOWFLAKE.ORGANIZATION_USAGE.MARKETPLACE_PAID_USAGE_DAILY
 WHERE usage_date >= %s
   AND usage_date < %s
 ORDER BY usage_date

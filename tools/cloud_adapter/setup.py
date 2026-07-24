@@ -65,7 +65,11 @@ setup(name='cloud-adapter',
       packages=['cloud_adapter', 'cloud_adapter.clouds', 'cloud_adapter.lib',
                 'cloud_adapter.lib.azure_partner'],
       package_data={
-          'cloud_adapter.clouds': ['snowflake_queries/*.sql'],
+          'cloud_adapter.clouds': [
+              'snowflake_queries/*.sql',
+              'snowflake_queries/account_usage/*.sql',
+              'snowflake_queries/organization_usage/*.sql',
+          ],
       },
       include_package_data=True,
       install_requires=requirements,

@@ -28,6 +28,15 @@ RECONCILE_THRESHOLD = 0.05
 # Exclude recent days from reconcile; ACCOUNT_USAGE daily rows lag.
 RECONCILE_LAG_DAYS = 2
 SQL_DIR = Path(__file__).resolve().parent / 'snowflake_queries'
+
+# billing_source connection property.
+BILLING_SOURCE_ACCOUNT_USAGE = 'account_usage'
+BILLING_SOURCE_ORGANIZATION_USAGE = 'organization_usage'
+BILLING_SOURCES = frozenset({
+    BILLING_SOURCE_ACCOUNT_USAGE,
+    BILLING_SOURCE_ORGANIZATION_USAGE,
+})
+
 # METERING_DAILY_HISTORY names → OptScale service_type used by detail collectors.
 DAILY_TO_DETAIL_SERVICE = {
     'WAREHOUSE_METERING': 'COMPUTE',
@@ -49,11 +58,71 @@ PRODUCT_LOOKUP_TYPE = {
 
 
 @lru_cache(maxsize=None)
-def load_sql(name: str) -> str:
-    path = SQL_DIR / name
-    if not path.is_file():
-        raise FileNotFoundError('Snowflake SQL file not found: %s' % path)
-    return path.read_text(encoding='utf-8').strip()
+def load_sql(name: str, billing_source: str = BILLING_SOURCE_ACCOUNT_USAGE) -> str:
+    """Load SQL for the configured billing source.
+
+    ACCOUNT_USAGE files: snowflake_queries/account_usage/
+    ORGANIZATION_USAGE files: snowflake_queries/organization_usage/
+    Shared helpers (probe, product mapping): snowflake_queries/
+    """
+    if billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
+        subdir = 'organization_usage'
+    else:
+        subdir = 'account_usage'
+    path = SQL_DIR / subdir / name
+    if path.is_file():
+        return path.read_text(encoding='utf-8').strip()
+    # Shared SQL not tied to a billing source.
+    shared = SQL_DIR / name
+    if shared.is_file():
+        return shared.read_text(encoding='utf-8').strip()
+    raise FileNotFoundError(
+        'Snowflake SQL file not found: %s (also tried %s)' % (path, shared))
+
+
+def _row_locator(record, fallback: str) -> str:
+    """Prefer per-row account_locator (org multi-account) over session account."""
+    return str(record.get('account_locator') or fallback)
+
+
+def _row_account_name(record, fallback: str | None = None) -> str | None:
+    """Prefer per-row account_name (org multi-account) over session name."""
+    name = record.get('account_name')
+    if name is not None and str(name).strip() != '':
+        return str(name)
+    if fallback is not None and str(fallback).strip() != '':
+        return str(fallback)
+    return None
+
+
+def enrich_account_name(
+        record: dict,
+        account_name_map: dict,
+        session_account_name: str | None = None,
+        billing_source: str = BILLING_SOURCE_ACCOUNT_USAGE) -> None:
+    """Ensure account_name is set for every account_locator on the record.
+
+    Resolution order:
+    1. Name already on the usage row (ORGANIZATION_USAGE columns)
+    2. Org-wide map from ORGANIZATION_USAGE.ACCOUNTS (and names learned
+       from earlier rows in this import)
+    3. Session CURRENT_ACCOUNT_NAME() for single-account ACCOUNT_USAGE only
+    """
+    loc = record.get('account_locator')
+    loc_key = str(loc).upper() if loc else None
+    name = _row_account_name(record)
+    if name and loc_key:
+        account_name_map.setdefault(loc_key, name)
+    if not name and loc_key:
+        name = account_name_map.get(loc_key)
+    if (not name
+            and billing_source == BILLING_SOURCE_ACCOUNT_USAGE
+            and session_account_name):
+        name = session_account_name
+        if loc_key:
+            account_name_map.setdefault(loc_key, name)
+    if name:
+        record['account_name'] = name
 
 
 def calculate_cost(record, cost_model):
@@ -177,11 +246,21 @@ def product_lookup_type(record) -> str | None:
 
 
 def apply_product_tag(record, product_map: dict):
+    """Attach PRODUCT tag using billing-date yearquarter of the expense."""
     name = product_lookup_name(record)
     resource_type = product_lookup_type(record)
     if not name or not resource_type or not product_map:
         return
-    product = product_map.get((str(name).upper(), str(resource_type).upper()))
+    yq = year_quarter(record.get('start_date'))
+    locator = str(record.get('account_locator') or '').upper()
+    product = None
+    if locator:
+        product = product_map.get(
+            (locator, str(name).upper(), str(resource_type).upper(), yq))
+    # Legacy maps keyed without account_locator (account_usage single-account).
+    if product is None:
+        product = product_map.get(
+            (str(name).upper(), str(resource_type).upper(), yq))
     if product:
         record['tag'] = product
 
@@ -214,6 +293,9 @@ class SnowflakeUsageCollector(ABC):
     # Collector identity for import details when SERVICE_TYPE is grouped.
     SOURCE: str | None = None
 
+    def __init__(self, billing_source=BILLING_SOURCE_ACCOUNT_USAGE):
+        self.billing_source = billing_source or BILLING_SOURCE_ACCOUNT_USAGE
+
     @abstractmethod
     def fetch(self, cursor, start_ts: datetime, end_ts: datetime,
               account_locator: str) -> Iterator[dict]:
@@ -225,7 +307,8 @@ class SnowflakeUsageCollector(ABC):
             cursor.arraysize = max(getattr(cursor, 'arraysize', 0) or 0, 5000)
         except Exception:
             pass
-        cursor.execute(load_sql(self.SQL_FILE), params)
+        cursor.execute(
+            load_sql(self.SQL_FILE, self.billing_source), params)
         columns = [c[0].lower() for c in cursor.description]
         for row in cursor:
             yield dict(zip(columns, row))
@@ -242,13 +325,15 @@ class WarehouseMeteringCollector(SnowflakeUsageCollector):
             start = _to_utc(record.get('start_time'))
             end = _to_utc(record.get('end_time')) or start
             warehouse_id = record.get('warehouse_id')
+            loc = _row_locator(record, account_locator)
             yield {
                 'start_date': start,
                 'end_date': end,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
-                'resource_id': f"{account_locator}/warehouse/{warehouse_id}",
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
+                'resource_id': f"{loc}/warehouse/{warehouse_id}",
                 'resource_name': record.get('warehouse_name'),
                 'warehouse_id': warehouse_id,
                 'credits_used': float(record.get('credits_used') or 0),
@@ -278,13 +363,15 @@ class DatabaseStorageCollector(SnowflakeUsageCollector):
             database_id = record.get('database_id')
             avg_db = int(record.get('average_database_bytes') or 0)
             avg_fs = int(record.get('average_failsafe_bytes') or 0)
+            loc = _row_locator(record, account_locator)
             yield {
                 'start_date': start,
                 'end_date': start,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
-                'resource_id': f"{account_locator}/database/{database_id}",
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
+                'resource_id': f"{loc}/database/{database_id}",
                 'resource_name': record.get('database_name'),
                 'database_id': database_id,
                 'average_bytes': avg_db + avg_fs,
@@ -307,14 +394,16 @@ class StageStorageCollector(SnowflakeUsageCollector):
                     tzinfo=timezone.utc)
             else:
                 start = _to_utc(usage_date)
-            # ACCOUNT_USAGE stage view is account-level aggregate.
+            loc = _row_locator(record, account_locator)
+            # Stage view is account-level aggregate (per child account in org).
             yield {
                 'start_date': start,
                 'end_date': start,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
-                'resource_id': f"{account_locator}/STAGE",
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
+                'resource_id': f"{loc}/STAGE",
                 'resource_name': 'STAGE',
                 'average_bytes': int(record.get('average_stage_bytes') or 0),
             }
@@ -327,30 +416,37 @@ class PipeUsageCollector(SnowflakeUsageCollector):
     SOURCE = 'PIPE'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
-            start = _to_utc(record.get('start_time'))
-            end = _to_utc(record.get('end_time')) or start
+        # ORGANIZATION_USAGE is daily (USAGE_DATE); ACCOUNT_USAGE is event-level.
+        if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
+            params = (start_ts.date(), end_ts.date())
+        else:
+            params = (start_ts, end_ts)
+        for record in self._execute(cursor, params):
+            start = _day_start(record.get('start_time'))
+            end = _day_start(record.get('end_time')) or start
             pipe_id = record.get('pipe_id')
             pipe_name = record.get('pipe_name')
             catalog = record.get('pipe_catalog') or '_'
             schema = record.get('pipe_schema') or '_'
+            loc = _row_locator(record, account_locator)
             # Key by catalog/schema/name so recreations (new pipe_id, same
             # name) collapse into one OptScale resource. Fallback to pipe_id
             # when name is missing (account-level aggregate rows).
             if pipe_name:
                 resource_id = (
-                    f"{account_locator}/snowpipe/{catalog}/{schema}/"
+                    f"{loc}/snowpipe/{catalog}/{schema}/"
                     f"{pipe_name}")
                 resource_name = pipe_name
             else:
-                resource_id = f"{account_locator}/snowpipe/{pipe_id}"
+                resource_id = f"{loc}/snowpipe/{pipe_id}"
                 resource_name = str(pipe_id)
             yield {
                 'start_date': start,
                 'end_date': end,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'pipe_id': pipe_id,
@@ -370,20 +466,26 @@ class AutomaticClusteringCollector(SnowflakeUsageCollector):
     SOURCE = 'AUTO_CLUSTERING'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
-            start = _to_utc(record.get('start_time'))
-            end = _to_utc(record.get('end_time')) or start
+        if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
+            params = (start_ts.date(), end_ts.date())
+        else:
+            params = (start_ts, end_ts)
+        for record in self._execute(cursor, params):
+            start = _day_start(record.get('start_time'))
+            end = _day_start(record.get('end_time')) or start
             table_id = record.get('table_id')
             database_name = record.get('database_name')
             table_name = record.get('table_name')
+            loc = _row_locator(record, account_locator)
             yield {
                 'start_date': start,
                 'end_date': end,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
                 'resource_id': (
-                    f"{account_locator}/automatic_clustering/{table_id}"),
+                    f"{loc}/automatic_clustering/{table_id}"),
                 'resource_name': (
                     f"{database_name}.{record.get('schema_name')}."
                     f"{table_name}" if database_name and table_name
@@ -417,13 +519,15 @@ class MeteringDailyCollector(SnowflakeUsageCollector):
             else:
                 start = _to_utc(usage_date)
             service_type = record.get('service_type') or self.SERVICE_TYPE
+            loc = _row_locator(record, account_locator)
             yield {
                 'start_date': start,
                 'end_date': start,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': service_type,
-                'account_locator': account_locator,
-                'resource_id': f"{account_locator}/metering/{service_type}",
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
+                'resource_id': f"{loc}/metering/{service_type}",
                 'resource_name': service_type,
                 'credits_used': float(record.get('credits_billed') or 0),
                 'credits_used_compute': float(
@@ -461,6 +565,7 @@ class CortexAiFunctionsCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': (
                     f"{account_locator}/ai_functions/"
                     f"{function_name}/{model_name}"),
@@ -517,6 +622,7 @@ class CortexAgentCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'agent_id': agent_id,
@@ -549,6 +655,7 @@ class CortexCodeCliCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'request_id': record.get('request_id'),
@@ -579,6 +686,7 @@ class CortexCodeSnowsightCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'request_id': record.get('request_id'),
@@ -609,6 +717,7 @@ class CortexCodeDesktopCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'request_id': record.get('request_id'),
@@ -650,6 +759,7 @@ class SnowflakeIntelligenceCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'request_id': request_id,
@@ -671,21 +781,27 @@ class DataTransferCollector(SnowflakeUsageCollector):
     SERVICE_TYPE = 'DATA_TRANSFER'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
-            start = _to_utc(record.get('start_time'))
-            end = _to_utc(record.get('end_time')) or start
+        if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
+            params = (start_ts.date(), end_ts.date())
+        else:
+            params = (start_ts, end_ts)
+        for record in self._execute(cursor, params):
+            start = _day_start(record.get('start_time'))
+            end = _day_start(record.get('end_time')) or start
             source_region = record.get('source_region') or 'unknown'
             target_region = record.get('target_region') or 'unknown'
             transfer_type = record.get('transfer_type') or 'TRANSFER'
+            loc = _row_locator(record, account_locator)
             # Hourly uniqueness via start timestamp in resource_id.
             yield {
                 'start_date': start,
                 'end_date': end,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
                 'resource_id': (
-                    f"{account_locator}/data_transfer/"
+                    f"{loc}/data_transfer/"
                     f"{source_region}/{target_region}/{transfer_type}/"
                     f"{int(start.timestamp()) if start else 0}"),
                 'resource_name': (
@@ -709,14 +825,16 @@ class MarketplacePaidUsageCollector(SnowflakeUsageCollector):
             start = _day_start(record.get('usage_date'))
             listing = record.get('listing_global_name') or 'listing'
             charge_type = record.get('charge_type') or 'CHARGE'
+            loc = _row_locator(record, account_locator)
             yield {
                 'start_date': start,
                 'end_date': start,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
-                'account_locator': account_locator,
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
                 'resource_id': (
-                    f"{account_locator}/marketplace/"
+                    f"{loc}/marketplace/"
                     f"{listing}/{charge_type}"),
                 'resource_name': (
                     record.get('listing_display_name') or listing),
@@ -746,6 +864,7 @@ class ReaderWarehouseMeteringCollector(SnowflakeUsageCollector):
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': account_locator,
+                'account_name': _row_account_name(record),
                 'resource_id': (
                     f"{account_locator}/reader/{reader}/"
                     f"warehouse/{warehouse_id}"),
@@ -761,27 +880,162 @@ class ReaderWarehouseMeteringCollector(SnowflakeUsageCollector):
             }
 
 
-# Listing consumption is provider analytics (jobs), not billable credits —
-# SQL kept for probes; not registered in COLLECTORS.
+class ListingConsumptionCollector(SnowflakeUsageCollector):
+    """Provider-side listing consumption analytics (jobs), not billable credits.
+
+    Cost will be 0; useful for listing adoption / consumer activity.
+    """
+    SQL_FILE = 'data_sharing_listing_consumption.sql'
+    SERVICE_CATEGORY = 'data_sharing'
+    SERVICE_TYPE = 'LISTING_CONSUMPTION'
+    SOURCE = 'LISTING_CONSUMPTION'
+
+    def fetch(self, cursor, start_ts, end_ts, account_locator):
+        for record in self._execute(
+                cursor, (start_ts.date(), end_ts.date())):
+            start = _day_start(record.get('event_date'))
+            listing = (
+                record.get('listing_global_name')
+                or record.get('listing_name')
+                or 'listing')
+            consumer = (
+                record.get('consumer_account_locator')
+                or record.get('consumer_account_name')
+                or 'consumer')
+            share = record.get('share_name') or 'share'
+            yield {
+                'start_date': start,
+                'end_date': start,
+                'service_category': self.SERVICE_CATEGORY,
+                'service_type': self.SERVICE_TYPE,
+                'account_locator': account_locator,
+                'account_name': _row_account_name(record),
+                'resource_id': (
+                    f"{account_locator}/listing_consumption/"
+                    f"{listing}/{share}/{consumer}"),
+                'resource_name': (
+                    record.get('listing_display_name') or listing),
+                'listing_global_name': listing,
+                'listing_name': record.get('listing_name'),
+                'share_name': share,
+                'consumer_account_locator': consumer,
+                'consumer_account_name': record.get(
+                    'consumer_account_name'),
+                'consumer_organization': record.get(
+                    'consumer_organization'),
+                'consumer_name': record.get('consumer_name'),
+                'exchange_name': record.get('exchange_name'),
+                'region': record.get('snowflake_region'),
+                'jobs': float(record.get('jobs') or 0),
+                'unique_users_1d': float(
+                    record.get('unique_users_1d') or 0),
+            }
 
 
-COLLECTORS = [
-    WarehouseMeteringCollector,
-    DatabaseStorageCollector,
-    StageStorageCollector,
-    PipeUsageCollector,
-    AutomaticClusteringCollector,
-    MeteringDailyCollector,
+class UsageInCurrencyAdjustmentsCollector(SnowflakeUsageCollector):
+    """Org-only rebates / included-usage adjustments (currency amounts)."""
+    SQL_FILE = 'usage_in_currency_adjustments.sql'
+    SERVICE_CATEGORY = 'adjustment'
+    SERVICE_TYPE = 'BILLING_ADJUSTMENT'
+    SOURCE = 'USAGE_IN_CURRENCY_ADJ'
+
+    def fetch(self, cursor, start_ts, end_ts, account_locator):
+        for record in self._execute(
+                cursor, (start_ts.date(), end_ts.date())):
+            start = _day_start(record.get('usage_date'))
+            loc = _row_locator(record, account_locator)
+            usage_type = record.get('usage_type') or 'adjustment'
+            service_type = record.get('service_type') or self.SERVICE_TYPE
+            billing_type = record.get('billing_type') or 'ADJUSTMENT'
+            yield {
+                'start_date': start,
+                'end_date': start,
+                'service_category': self.SERVICE_CATEGORY,
+                'service_type': self.SERVICE_TYPE,
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
+                'resource_id': (
+                    f"{loc}/billing_adjustment/"
+                    f"{service_type}/{usage_type}/{billing_type}"),
+                'resource_name': usage_type,
+                'usage_type': usage_type,
+                'sf_service_type': service_type,
+                'billing_type': billing_type,
+                'rating_type': record.get('rating_type'),
+                'balance_source': record.get('balance_source'),
+                'currency': record.get('currency') or DEFAULT_CURRENCY,
+                'billable_amount': float(
+                    record.get('usage_in_currency') or 0),
+            }
+
+
+class ListingAutoFulfillmentCollector(SnowflakeUsageCollector):
+    """Org-only cross-region listing auto-fulfillment charges."""
+    SQL_FILE = 'listing_auto_fulfillment_usage_history.sql'
+    SERVICE_CATEGORY = 'data_sharing'
+    SERVICE_TYPE = 'LISTING_AUTO_FULFILLMENT'
+    SOURCE = 'LISTING_AUTO_FULFILLMENT'
+
+    def fetch(self, cursor, start_ts, end_ts, account_locator):
+        for record in self._execute(
+                cursor, (start_ts.date(), end_ts.date())):
+            start = _day_start(record.get('usage_date'))
+            loc = _row_locator(record, account_locator)
+            service_type = record.get('service_type') or 'AUTO_FULFILLMENT'
+            yield {
+                'start_date': start,
+                'end_date': start,
+                'service_category': self.SERVICE_CATEGORY,
+                'service_type': self.SERVICE_TYPE,
+                'account_locator': loc,
+                'account_name': _row_account_name(record),
+                'resource_id': (
+                    f"{loc}/listing_auto_fulfillment/{service_type}"),
+                'resource_name': (
+                    f"Listing auto-fulfillment · {service_type}"),
+                'sf_service_type': service_type,
+                'provider_account_locator': record.get(
+                    'provider_account_locator'),
+                'currency': record.get('currency') or DEFAULT_CURRENCY,
+                'billable_amount': float(
+                    record.get('estimated_usage_in_currency') or 0),
+            }
+
+
+# ACCOUNT_USAGE covers views that ORGANIZATION_USAGE does not provide
+# (Cortex / Intelligence / Reader / listing consumption analytics).
+# Shared billing (warehouse, storage, pipes, metering, transfer, marketplace)
+# is owned exclusively by ORGANIZATION_USAGE.
+COLLECTORS_ACCOUNT_USAGE = [
     CortexAiFunctionsCollector,
     CortexAgentCollector,
     CortexCodeCliCollector,
     CortexCodeSnowsightCollector,
     CortexCodeDesktopCollector,
     SnowflakeIntelligenceCollector,
+    ReaderWarehouseMeteringCollector,
+    ListingConsumptionCollector,
+]
+
+ACCOUNT_USAGE_EXCLUSIVE_SERVICE_TYPES = frozenset(
+    cls.SERVICE_TYPE for cls in COLLECTORS_ACCOUNT_USAGE)
+
+# ORGANIZATION_USAGE has no Cortex / Intelligence / Reader ACCOUNT_USAGE views.
+# Adds currency adjustments (rebates) and listing auto-fulfillment instead.
+COLLECTORS_ORGANIZATION_USAGE = [
+    WarehouseMeteringCollector,
+    DatabaseStorageCollector,
+    StageStorageCollector,
+    PipeUsageCollector,
+    AutomaticClusteringCollector,
+    MeteringDailyCollector,
     DataTransferCollector,
     MarketplacePaidUsageCollector,
-    ReaderWarehouseMeteringCollector,
+    UsageInCurrencyAdjustmentsCollector,
+    ListingAutoFulfillmentCollector,
 ]
+
+COLLECTORS = COLLECTORS_ACCOUNT_USAGE
 
 
 class Snowflake(CloudBase):
@@ -795,6 +1049,8 @@ class Snowflake(CloudBase):
         CloudParameter(name='role', type=str, required=False,
                        default='ACCOUNTADMIN'),
         CloudParameter(name='warehouse', type=str, required=True),
+        CloudParameter(name='billing_source', type=str, required=False,
+                       default=BILLING_SOURCE_ACCOUNT_USAGE),
     ]
 
     def __init__(self, cloud_config, *args, **kwargs):
@@ -821,6 +1077,23 @@ class Snowflake(CloudBase):
     @property
     def warehouse(self):
         return self.config.get('warehouse')
+
+    @property
+    def billing_source(self):
+        value = (
+            self.config.get('billing_source')
+            or BILLING_SOURCE_ACCOUNT_USAGE)
+        value = str(value).strip().lower()
+        if value not in BILLING_SOURCES:
+            raise InvalidParameterException(
+                'billing_source must be one of: %s' % ', '.join(
+                    sorted(BILLING_SOURCES)))
+        return value
+
+    def _collectors(self):
+        if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
+            return COLLECTORS_ORGANIZATION_USAGE
+        return COLLECTORS_ACCOUNT_USAGE
 
     def _load_private_key_bytes(self):
         raw = self.private_key
@@ -900,12 +1173,23 @@ class Snowflake(CloudBase):
                     % self.warehouse)
             self._probe_view(
                 cursor,
-                'SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY',
+                (
+                    'SNOWFLAKE.ORGANIZATION_USAGE.WAREHOUSE_METERING_HISTORY'
+                    if self.billing_source
+                    == BILLING_SOURCE_ORGANIZATION_USAGE
+                    else 'SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY'
+                ),
                 warnings)
-            self._probe_view(
-                cursor,
-                'SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY',
-                warnings)
+            if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
+                self._probe_view(
+                    cursor,
+                    'SNOWFLAKE.ORGANIZATION_USAGE.USAGE_IN_CURRENCY_DAILY',
+                    warnings)
+            else:
+                self._probe_view(
+                    cursor,
+                    'SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY',
+                    warnings)
             cursor.close()
         except CloudConnectionError:
             raise
@@ -934,10 +1218,12 @@ class Snowflake(CloudBase):
         self._import_warnings = []
         self._import_collectors = []
         self._import_reconciliation = []
+        self._import_period_start = int(start_ts.timestamp())
+        self._import_period_end = int(end_ts.timestamp())
         detail_credits = defaultdict(float)
         # Seed one in_progress row per service_type so UI can show live status.
         seeded = set()
-        for collector_cls in COLLECTORS:
+        for collector_cls in self._collectors():
             service_type = collector_cls.SERVICE_TYPE
             if service_type in seeded:
                 continue
@@ -958,12 +1244,22 @@ class Snowflake(CloudBase):
         conn = self.connect()
         try:
             cursor = conn.cursor()
-            cursor.execute('SELECT CURRENT_ACCOUNT()')
-            account_locator = str(cursor.fetchone()[0])
+            cursor.execute(
+                'SELECT CURRENT_ACCOUNT(), CURRENT_ACCOUNT_NAME()')
+            account_locator, session_account_name = cursor.fetchone()
+            account_locator = str(account_locator)
+            session_account_name = (
+                str(session_account_name) if session_account_name else None)
             product_map = self._load_product_map(cursor, account_locator)
+            account_name_map = self._load_account_name_map(cursor)
+            if (session_account_name and account_locator
+                    and str(account_locator).upper()
+                    not in account_name_map):
+                account_name_map[str(account_locator).upper()] = (
+                    session_account_name)
             # Sequential collectors (max 1 concurrent Snowflake query).
-            for collector_cls in COLLECTORS:
-                collector = collector_cls()
+            for collector_cls in self._collectors():
+                collector = collector_cls(billing_source=self.billing_source)
                 records = 0
                 credits = 0.0
                 average_bytes = 0
@@ -978,6 +1274,9 @@ class Snowflake(CloudBase):
                 try:
                     for record in collector.fetch(
                             cursor, start_ts, end_ts, account_locator):
+                        enrich_account_name(
+                            record, account_name_map, session_account_name,
+                            self.billing_source)
                         apply_product_tag(record, product_map)
                         records += 1
                         used = float(record.get('credits_used') or 0)
@@ -1076,26 +1375,79 @@ class Snowflake(CloudBase):
             'finished_at': finished_at,
         })
 
-    def _load_product_map(self, cursor, account_locator):
-        """Load PRODUCT tags keyed by (RESOURCE_NAME, RESOURCE_TYPE)."""
-        product_map = {}
-        yq = year_quarter()
+    def _load_account_name_map(self, cursor) -> dict:
+        """locator(upper) → account_name for every org member account.
+
+        Used so every ORGANIZATION_USAGE expense carries the member account
+        name (PUBLICIS_PROD / PUBLICIS_ADMIN / …), not only the session
+        admin account. Fails soft if ACCOUNTS is unavailable.
+        """
+        account_name_map = {}
+        if self.billing_source != BILLING_SOURCE_ORGANIZATION_USAGE:
+            return account_name_map
         try:
-            cursor.execute(
-                load_sql('resource_product_mapping.sql'),
-                (account_locator, yq))
+            cursor.execute(load_sql(
+                'accounts.sql', BILLING_SOURCE_ORGANIZATION_USAGE))
             columns = [c[0].lower() for c in cursor.description]
             for row in cursor:
                 record = dict(zip(columns, row))
+                loc = record.get('account_locator')
+                name = record.get('account_name')
+                if not loc or not name:
+                    continue
+                account_name_map[str(loc).upper()] = str(name)
+            LOG.info(
+                'Snowflake account name map loaded: entries=%s locators=%s',
+                len(account_name_map),
+                sorted(account_name_map.keys()))
+        except Exception as exc:
+            warning = (
+                'Unable to load ORGANIZATION_USAGE.ACCOUNTS for '
+                'account_name mapping: %s' % exc)
+            self._import_warnings.append(warning)
+            LOG.warning(warning)
+        return account_name_map
+
+    def _load_product_map(self, cursor, account_locator):
+        """Load PRODUCT tags keyed by account + name + type + yearquarter.
+
+        SQL lives in snowflake_queries/resource_product_mapping.sql so mapping
+        filters can be edited without changing Python. Lookup uses the expense
+        billing date quarter (start_date), not the import/load day.
+
+        For ORGANIZATION_USAGE the session account is the org admin, but usage
+        rows (and mapping rows) span every member account_locator — load the
+        full mapping table and key by account_locator.
+        """
+        product_map = {}
+        try:
+            cursor.execute(load_sql('resource_product_mapping.sql'))
+            columns = [c[0].lower() for c in cursor.description]
+            for row in cursor:
+                record = dict(zip(columns, row))
+                loc = record.get('account_locator')
                 name = record.get('resource_name')
                 rtype = record.get('resource_type')
+                yq = record.get('yearquarter')
                 product = record.get('product')
-                if not name or not rtype or not product:
+                if not name or not rtype or not yq or not product:
                     continue
-                product_map[(str(name).upper(), str(rtype).upper())] = product
+                name_u = str(name).upper()
+                type_u = str(rtype).upper()
+                yq_u = str(yq).upper()
+                if loc:
+                    product_map[(
+                        str(loc).upper(), name_u, type_u, yq_u,
+                    )] = product
+                else:
+                    # Rows without locator (or unit-test maps).
+                    product_map[(name_u, type_u, yq_u)] = product
             LOG.info(
-                'Snowflake product map loaded: account=%s yearquarter=%s '
-                'entries=%s', account_locator, yq, len(product_map))
+                'Snowflake product map loaded: session_account=%s entries=%s '
+                'locators=%s quarters=%s',
+                account_locator, len(product_map),
+                sorted({k[0] for k in product_map if len(k) == 4}),
+                sorted({k[-1] for k in product_map}))
         except Exception as exc:
             warning = (
                 'Snowflake product mapping skipped: unable to query '
@@ -1121,12 +1473,24 @@ class Snowflake(CloudBase):
 
         Warnings only — never blocks import. Threshold: 5%.
         Excludes the last RECONCILE_LAG_DAYS (ACCOUNT_USAGE latency).
+        Skipped for ACCOUNT_USAGE (Cortex/Reader only — no shared metering).
         """
         warnings = []
         reconciliation = []
-        # Compare only settled days; recent ACCOUNT_USAGE rows lag.
-        reconcile_end = end_ts.date() - timedelta(days=RECONCILE_LAG_DAYS)
+        if self.billing_source != BILLING_SOURCE_ORGANIZATION_USAGE:
+            self._import_reconciliation = reconciliation
+            return warnings
+        # Compare only settled, fully covered calendar days.
+        # Detail collectors filter by start_time/end_time datetimes, while
+        # METERING_DAILY uses whole USAGE_DATE values — a partial first day
+        # (incremental import starting mid-day) would otherwise look like a
+        # COMPUTE mismatch (daily includes the full day, detail does not).
         reconcile_start = start_ts.date()
+        if (start_ts.hour or start_ts.minute or start_ts.second or
+                start_ts.microsecond):
+            reconcile_start += timedelta(days=1)
+        # Exclude recent days; ACCOUNT_USAGE / org daily rows can lag.
+        reconcile_end = end_ts.date() - timedelta(days=RECONCILE_LAG_DAYS)
         if reconcile_end <= reconcile_start:
             LOG.info(
                 'Snowflake reconciliation skipped: window too short after '
@@ -1147,7 +1511,8 @@ class Snowflake(CloudBase):
             return warnings
         try:
             cursor.execute(
-                load_sql('metering_daily_reconcile.sql'),
+                load_sql(
+                    'metering_daily_reconcile.sql', self.billing_source),
                 (reconcile_start, reconcile_end))
             columns = [c[0].lower() for c in cursor.description]
             daily = defaultdict(float)
@@ -1303,11 +1668,18 @@ class Snowflake(CloudBase):
         warnings = self.get_import_warnings()
         if not collectors and not reconciliation and not warnings:
             return None
-        return {
+        details = {
             'collectors': collectors,
             'reconciliation': reconciliation,
             'warnings': warnings,
         }
+        period_start = getattr(self, '_import_period_start', None)
+        period_end = getattr(self, '_import_period_end', None)
+        if period_start is not None:
+            details['period_start'] = period_start
+        if period_end is not None:
+            details['period_end'] = period_end
+        return details
 
     def configure_report(self):
         if DEFAULT_CURRENCY != self._currency:
