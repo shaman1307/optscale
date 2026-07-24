@@ -19,10 +19,11 @@ CHUNK_SIZE = 2000
 # are recreated with current ids/tag keys (base64).
 FULL_REIMPORT_DAYS = 5
 META_FIELDS = [
-    'service_category', 'service_type', 'account_name', 'account_locator',
+    'service_category', 'service_type', 'account_name',
     'region', 'model_name', 'function_name', 'query_id', 'user_id',
     'user_name', 'request_id', 'agent_id', 'agent_name', 'transfer_type',
-    'tag',
+    'tag', 'listing_global_name', 'consumer_account_locator',
+    'jobs', 'unique_users_1d',
 ]
 # Legacy OptScale resource_type → current service_type labels.
 RESOURCE_TYPE_RENAMES = {
@@ -37,6 +38,8 @@ RESOURCE_TYPE_RENAMES = {
     'CORTEX_CODE_DESKTOP': 'AI_SERVICES',
     'SNOWFLAKE_INTELLIGENCE': 'AI_SERVICES',
     'SNOWFLAKE_COCO_SNOWSIGHT': 'AI_SERVICES',
+    'SNOWFLAKE_COCO_CLI': 'AI_SERVICES',
+    'SNOWFLAKE_COCO_DESKTOP': 'AI_SERVICES',
 }
 # Legacy cloud_resource_id patterns replaced by STAGE / per-user Cortex ids.
 _LEGACY_RESOURCE_ID_RE = re.compile('|'.join((
@@ -188,6 +191,8 @@ class SnowflakeReportImporter(BaseReportImporter):
         resource_type = None
         resource_type_ts = None
         tag = None
+        account_locator = None
+        account_name = None
         for e in expenses:
             start_date = e.get('start_date')
             end_date = e.get('end_date') or start_date
@@ -207,6 +212,10 @@ class SnowflakeReportImporter(BaseReportImporter):
                 resource_type_ts = start_date
             if not tag and e.get('tag'):
                 tag = e.get('tag')
+            if not account_locator and e.get('account_locator'):
+                account_locator = e.get('account_locator')
+            if not account_name and e.get('account_name'):
+                account_name = e.get('account_name')
             for k in META_FIELDS:
                 v = e.get(k)
                 if v is not None and k not in meta_dict:
@@ -225,6 +234,8 @@ class SnowflakeReportImporter(BaseReportImporter):
             'tags': tags,
             'first_seen': int(first_seen.timestamp()),
             'last_seen': int(last_seen.timestamp()),
+            'account_locator': account_locator,
+            'account_name': account_name,
             **meta_dict,
         }
         LOG.debug('Detected Snowflake resource info: %s', info)
@@ -232,7 +243,7 @@ class SnowflakeReportImporter(BaseReportImporter):
 
     def get_resource_data(self, r_id, info,
                           unique_id_field='cloud_resource_id'):
-        return {
+        data = {
             unique_id_field: r_id,
             'resource_type': info['type'],
             'name': info['name'],
@@ -241,6 +252,12 @@ class SnowflakeReportImporter(BaseReportImporter):
             'last_seen': info['last_seen'],
             **self._get_cloud_extras(info),
         }
+        # First-class fields for Resources filters / categorize-by / table.
+        if info.get('account_locator'):
+            data['account_locator'] = info['account_locator']
+        if info.get('account_name'):
+            data['account_name'] = info['account_name']
+        return data
 
     def create_resources_if_not_exist(self, cloud_account_id,
                                       resources_info_map,
@@ -263,10 +280,20 @@ class SnowflakeReportImporter(BaseReportImporter):
             }
             if info.get('name'):
                 update['name'] = info['name']
+            if info.get('account_locator'):
+                update['account_locator'] = info['account_locator']
+            if info.get('account_name'):
+                update['account_name'] = info['account_name']
             if info.get('service_type'):
                 update['meta.service_type'] = info['service_type']
             if info.get('user_name'):
                 update['meta.user_name'] = info['user_name']
+            for meta_key in (
+                    'listing_global_name', 'consumer_account_locator',
+                    'jobs', 'unique_users_1d', 'model_name', 'function_name',
+                    'query_id', 'region', 'account_name'):
+                if info.get(meta_key) is not None and info.get(meta_key) != '':
+                    update['meta.%s' % meta_key] = info[meta_key]
             # info['tags'] uses plain keys for REST create_bulk (which encodes).
             # Direct Mongo $set must use base64 keys or clean_expenses 500s.
             plain_tags = info.get('tags') or {}
