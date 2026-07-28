@@ -807,6 +807,68 @@ Canonical ids: `{account_locator}/warehouse|{database}|pipe|metering|stages/...`
 
 ---
 
+## 12. Virtual children в Data Sources (organization_usage)
+
+### Контекст
+
+GCP/Azure **tenant** создают реальные child cloud accounts (`parent_id`), каждый со своим import. В UI Data Sources корневой tenant раскрывается, колонки считаются из `details` детей.
+
+Snowflake `organization_usage` уже кладёт usage **всех** аккаунтов org в **один** cloud account; на ресурсах есть `account_name` / `account_locator`. Физические child CA как у GCP не подходят: expenses привязаны к одному `cloud_account_id`, дети всегда были бы с нулями, а повторный import по аккаунтам дублировал бы данные.
+
+### Цель
+
+Для Snowflake с `billing_source=organization_usage` на странице Data Sources: раскрыть корневой аккаунт и показать **виртуальные** строки по linked accounts (имя + locator) с теми же колонками, что у GCP children (resources charged, total resources, expenses MTD, total, forecast; billing period — если доступен).
+
+### Принцип
+
+| | GCP tenant | Snowflake org (план) |
+|--|--|--|
+| Children | Реальные `cloud_account` | Виртуальные объекты только в API/UI |
+| Import | Отдельный на каждый project | Один import родителя |
+| Агрегация | `details` по `cloud_account_id` | `details` по `account_name` / `account_locator` из ресурсов/expenses родителя |
+| Навигация | Ссылка на child data source | Либо deep-link в Resources с фильтром по account, либо read-only строка без отдельной CA-страницы |
+
+### API
+
+1. В `CloudAccountController.list(details=True)` (и при необходимости `get_details`) для Snowflake + `organization_usage`:
+   - выбрать distinct аккаунты из Mongo resources родителя (`account_name` / `account_locator`);
+   - посчитать per-account: MTD cost/count, last month cost, total cost/resources, forecast (те же формулы, что для CA);
+   - billing period min/max `start_date` по аккаунту (уже есть helpers для Snowflake ranges — расширить группировкой).
+2. Ответ: поле вроде `children` / `linked_accounts` у родителя — массив объектов **без** создания строк в `cloudaccount`:
+   ```json
+   {
+     "id": "<synthetic or locator-based id>",
+     "name": "<account_name>",
+     "account_id": "<account_locator>",
+     "type": "snowflake",
+     "parent_id": "<root_ca_id>",
+     "virtual": true,
+     "details": { "cost": ..., "resources": ..., "forecast": ..., "total_cost": ..., "total_resources": ..., "billing_period_start": ..., "billing_period_end": ... }
+   }
+   ```
+3. Не создавать real CA, не ставить `auto_import`, не вызывать `get_children_configs` / resource observer для Snowflake.
+
+### UI
+
+1. `CloudAccountsTable`: кроме `parent_id` из списка CA, подмешивать `dataSource.children` / `linked_accounts` с бэка (если `virtual`).
+2. `summarizeChildrenDetails` — как сейчас для GCP (сумма в корне); для Snowflake root `details` уже полные по org — **не перетирать** root details суммой детей (или считать детей только для expand, root оставлять как есть).
+3. Expander / NameCell: виртуальные строки без кружка «отдельный DS» или с пометкой account; клик — фильтр Resources по `account_name`/`account_locator`, а не страница несуществующего CA.
+4. GraphQL/REST типы: опциональные `virtual`, `children` на cloud account details.
+
+### Вне scope этой задачи
+
+- Physical child snowflake accounts / split import per account.
+- Recommendations / discovery per linked account.
+- Менять модель import или schema raw expenses.
+
+### Порядок работ
+
+1. Backend: агрегация per-account details + поле в list/get.
+2. Frontend: expand + корректный merge details + навигация/фильтр.
+3. Тесты: unit на агрегацию; UI smoke на PUBLICIS-ADMIN.
+
+---
+
 ## Ссылки
 
 - [Organization Usage views](https://docs.snowflake.com/en/sql-reference/organization-usage)
