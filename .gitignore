@@ -30,5 +30,8 @@ jira_ui/*/build/
 # Compose env
 optscale-deploy/compose/.env
 
+# Local dumps / secrets (do not commit)
+.local/
+
 # Vagrant
 optscale-deploy/.vagrant/

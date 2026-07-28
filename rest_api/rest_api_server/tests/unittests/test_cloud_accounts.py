@@ -2539,6 +2539,38 @@ class TestCloudAccountApi(TestApiBase):
         self.assertEqual(code, 200)
         self.assertEqual(cost_model['value']['credit_price'], 3.5)
 
+    def test_snowflake_patch_cost_model_only(self):
+        """UI pricing form sends only cost_model; must not re-validate creds."""
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'HW44440', 'warnings': []
+            }).start()
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_snowflake_cloud_acc)
+        self.assertEqual(code, 201)
+        params = {
+            'config': {
+                'cost_model': {
+                    'credit_price': 4.25,
+                    'storage_price_per_tb_month': 40.0,
+                },
+            },
+        }
+        code, ret = self.client.cloud_account_update(cloud_acc['id'], params)
+        self.assertEqual(code, 200)
+        self.assertEqual(ret['config']['cost_model']['credit_price'], 4.25)
+        self.assertEqual(
+            ret['config']['cost_model']['storage_price_per_tb_month'], 40.0)
+        # Billing fields unchanged; private_key still omitted when secure
+        self.assertEqual(ret['config']['account'],
+                         self.valid_snowflake_cloud_acc['config']['account'])
+        self.assertEqual(ret['config']['warehouse'],
+                         self.valid_snowflake_cloud_acc['config']['warehouse'])
+        code, cost_model = self.client.sku_cost_model_get(cloud_acc['id'])
+        self.assertEqual(code, 200)
+        self.assertEqual(cost_model['value']['credit_price'], 4.25)
+
     def test_adapter_implemented(self):
         for t in list(CloudTypes):
             CloudAdapter.get_adapter({'type': t.value})

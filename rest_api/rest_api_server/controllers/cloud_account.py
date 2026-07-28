@@ -534,6 +534,13 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             self.session, self._config)
         old_config = cloud_acc_obj.decoded_config
         config = kwargs.pop('config', {})
+        # Price-only updates send {cost_model: {...}}. Pop it before merging
+        # secrets / validating billing creds — otherwise restoring protected
+        # fields (e.g. Snowflake private_key) makes config non-empty and
+        # handle_config fails with "account, user, warehouse is not provided".
+        cost_model = {}
+        if config:
+            cost_model = config.pop('cost_model', {}) or {}
         if 'linked' in config:
             linked = config['linked']
             if linked != old_config.get('linked', False):
@@ -552,6 +559,7 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             raise WrongArgumentsException(Err.OE0211, ['config'])
         # Keep existing secrets when update payload omits or clears them
         # (e.g. Snowflake private_key — re-pasting PEM on every edit is painful).
+        # Only when other billing config fields are being updated.
         if config:
             for param in adapter_cls.BILLING_CREDS:
                 if not param.protected or param.readonly:
@@ -616,21 +624,19 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             self.session, self._config, self.token).get(
             cloud_acc_obj.organization_id)
         if config:
-            cost_model = config.pop('cost_model', {})
-            if config:
-                config, account_id, warnings = self.handle_config(
-                    adapter_cls, config, organization)
-                self.check_cloud_account_exists(cloud_acc_obj.organization_id,
-                                                cloud_acc_type, account_id,
-                                                cloud_acc_obj.id)
-                # k8s config is always different but must not be changed
-                # on update
-                if cloud_acc_obj.type != CloudTypes.KUBERNETES_CNR:
-                    kwargs['account_id'] = account_id
-                kwargs['config'] = encode_config(config)
-                config_changed = config != old_config
-            if cost_model:
-                cost_model_controller.edit(cloud_acc_obj.id, value=cost_model)
+            config, account_id, warnings = self.handle_config(
+                adapter_cls, config, organization)
+            self.check_cloud_account_exists(cloud_acc_obj.organization_id,
+                                            cloud_acc_type, account_id,
+                                            cloud_acc_obj.id)
+            # k8s config is always different but must not be changed
+            # on update
+            if cloud_acc_obj.type != CloudTypes.KUBERNETES_CNR:
+                kwargs['account_id'] = account_id
+            kwargs['config'] = encode_config(config)
+            config_changed = config != old_config
+        if cost_model:
+            cost_model_controller.edit(cloud_acc_obj.id, value=cost_model)
 
         if config_changed and cloud_acc_obj.auto_import:
             configuration_res = self._configure_report(
