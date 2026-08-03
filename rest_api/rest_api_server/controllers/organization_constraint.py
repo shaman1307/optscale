@@ -468,8 +468,10 @@ class OrganizationConstraintController(ConstraintBaseController,
                         extended_filters[entity_name][-1]['id'] += WITH_SUBPOOLS_SIGN
         pools = extended_filters.get('pool', [])
         for pool in pools:
-            if isinstance(pool, dict) and not isinstance(pool['purpose'], str):
-                pool['purpose'] = pool['purpose'].value
+            if isinstance(pool, dict):
+                purpose = pool.get('purpose')
+                if purpose is not None and not isinstance(purpose, str):
+                    pool['purpose'] = purpose.value
         return extended_filters
 
     def create(self, **kwargs):

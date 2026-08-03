@@ -208,6 +208,9 @@ const useGet = ({ withPoolDetails = true, withPoolChildren = true } = {}) => {
   const { organizationPoolId } = useOrganizationInfo();
   const dispatch = useDispatch();
 
+  const getPoolIds = ({ id, children = [] } = {}) =>
+    [...new Set([...(children || []).map(({ id: childId }) => childId), id].filter(Boolean))];
+
   const {
     apiData: { pool: data = {} },
   } = useApiData(GET_POOL);
@@ -227,9 +230,7 @@ const useGet = ({ withPoolDetails = true, withPoolChildren = true } = {}) => {
         dispatch(getPool(organizationPoolId, withPoolChildren, withPoolDetails)).then(() => {
           if (!isError(GET_POOL, getState())) {
             const { pool = {} } = getState()?.[RESTAPI]?.[GET_POOL] ?? {};
-            const { id, children = [] } = pool;
-
-            const poolIds = [...children.map((child) => child.id), id];
+            const poolIds = getPoolIds(pool);
 
             dispatch(getPoolAllowedActions(poolIds));
           }
@@ -237,6 +238,15 @@ const useGet = ({ withPoolDetails = true, withPoolChildren = true } = {}) => {
       });
     }
   }, [dispatch, shouldInvoke, organizationPoolId, withPoolDetails, withPoolChildren]);
+
+  useEffect(() => {
+    if (!shouldInvoke) {
+      const poolIds = getPoolIds(data);
+      if (poolIds.length > 0) {
+        dispatch(getPoolAllowedActions(poolIds));
+      }
+    }
+  }, [dispatch, shouldInvoke, data]);
 
   return { isLoading, isDataReady, data, isGetPoolAllowedActionsLoading };
 };
