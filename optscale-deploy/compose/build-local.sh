@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Build OptScale service images for docker-compose and tag them the way
-# compose / docker-compose.override.yml expect: ${COMPANY}/<service>:local
+# compose / docker-compose.override.yml expect: hystax/<service>:local
 #
 # Root cause this fixes: ./build.sh <svc> local produces "<svc>:local", while
-# compose looks for "hystax/<svc>:local" (and OPTSCALE_VERSION=local).
+# override.yml looks for "hystax/<svc>:local". Do NOT set OPTSCALE_VERSION=local
+# in .env — that forces every compose service onto :local and breaks the stack.
 #
 # Usage (from this directory or any cwd):
 #   ./build-local.sh                    # ngui + rest_api + diworker
@@ -84,37 +85,12 @@ compose_service_for() {
     esac
 }
 
-ensure_optscale_version_local() {
-    if [[ ! -f "$ENV_FILE" ]]; then
-        echo "No ${ENV_FILE} — skip OPTSCALE_VERSION update (copy .env.example first)."
-        return
-    fi
-    local tmp
-    tmp="$(mktemp)"
-    awk -F= -v tag="$TAG" '
-        BEGIN { found = 0 }
-        $1 == "OPTSCALE_VERSION" {
-            print "OPTSCALE_VERSION=" tag
-            found = 1
-            next
-        }
-        { print }
-        END {
-            if (!found) print "OPTSCALE_VERSION=" tag
-        }
-    ' "$ENV_FILE" > "$tmp"
-    mv "$tmp" "$ENV_FILE"
-    echo "Set OPTSCALE_VERSION=${TAG} in .env"
-}
-
 echo "Repo:    ${REPO_ROOT}"
 echo "Company: ${COMPANY}"
 echo "Tag:     ${TAG}"
 echo "Build:   ${SERVICES[*]}"
 echo "Commit:  $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo ""
-
-ensure_optscale_version_local
 
 COMPOSE_SERVICES=()
 for svc in "${SERVICES[@]}"; do
@@ -143,14 +119,14 @@ done
 
 if [[ "$DO_UP" == true ]]; then
     echo ""
-    echo "Recreating compose services: ${COMPOSE_SERVICES[*]}"
+    echo "Recreating compose services (no-deps): ${COMPOSE_SERVICES[*]}"
     (
         cd "$SCRIPT_DIR"
-        docker compose up -d --force-recreate "${COMPOSE_SERVICES[@]}"
+        docker compose up -d --no-deps --force-recreate "${COMPOSE_SERVICES[@]}"
     )
 fi
 
 echo ""
 echo "Done. Verify, e.g.:"
 echo "  docker image ls '${COMPANY}/*:${TAG}'"
-echo "  docker compose -f ${SCRIPT_DIR}/docker-compose.yml config | grep -E 'ngui|rest_api|diworker'"
+echo "  docker compose -f ${SCRIPT_DIR}/docker-compose.yml -f ${SCRIPT_DIR}/docker-compose.override.yml config | grep image | head"
