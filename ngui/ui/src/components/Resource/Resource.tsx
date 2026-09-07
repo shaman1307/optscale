@@ -80,8 +80,8 @@ const Resource = ({ resource, isGetResourceLoading, patchResource, isLoadingPatc
     k8s_namespace: k8sNamespace,
     k8s_node: k8sNode,
     resource_type: resourceType,
-    details = {},
-    tags,
+    details: rawDetails,
+    tags = {},
     pool_id: poolId,
     recommendations: { modules = [] } = {},
     dismissed_recommendations: { modules: dismissedModules = [] } = {},
@@ -108,13 +108,14 @@ const Resource = ({ resource, isGetResourceLoading, patchResource, isLoadingPatc
   } = resource;
 
   const { cloud_console_link: cloudConsoleLink } = meta;
+  const details = rawDetails && typeof rawDetails === "object" && !Array.isArray(rawDetails) ? rawDetails : {};
   const {
     cloud_type: cloudType,
     cost = 0,
     total_cost: totalCost = 0,
     forecast = 0,
-    constraints,
-    policies,
+    constraints = {},
+    policies = {},
     env_properties_collector_link: envPropertiesCollectorLink,
     total_traffic_expenses: totalTrafficExpenses = 0,
     total_traffic_usage: totalTrafficUsage = 0,
@@ -124,7 +125,7 @@ const Resource = ({ resource, isGetResourceLoading, patchResource, isLoadingPatc
     cloud_name: cloudName,
   } = details;
 
-  const savings = getSumByObjectKey(modules, "saving");
+  const savings = getSumByObjectKey(Array.isArray(modules) ? modules : [], "saving");
 
   const isPartOfCluster = !!clusterId;
 

@@ -1,55 +1,108 @@
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import PriorityHighOutlinedIcon from "@mui/icons-material/PriorityHighOutlined";
 import Link from "@mui/material/Link";
+import Typography from "@mui/material/Typography";
 import { FormattedMessage } from "react-intl";
 import Icon from "components/Icon";
 import PoolLabel from "components/PoolLabel";
 import Expander from "components/Table/components/Expander";
+import Pagination from "components/Table/components/Pagination";
 import TextWithDataTestId from "components/TextWithDataTestId";
 import Tooltip from "components/Tooltip";
 import { isEmptyArray } from "utils/arrays";
+import { getPoolTypeMessageId, isPoolTypeGroup } from "utils/pools";
 
-const poolName = ({ onExpensesExportClick, onConstraintsClick }) => ({
+const PoolTypeGroupNameCell = ({ row, classes, onChildPageChange }) => {
+  const { original, id: rowId } = row;
+  const { purpose: type, childrenCount = 0, id, childPageCount = 1, childPageIndex = 0 } = original;
+  const showChildPagination = row.getIsExpanded() && childPageCount > 1;
+
+  return (
+    <div className={classes.nameCellWrapper}>
+      <Expander row={row} />
+      <PoolLabel
+        disableLink
+        type={type}
+        label={
+          <>
+            <FormattedMessage id={getPoolTypeMessageId(type)} />
+            <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 0.5 }}>
+              ({childrenCount})
+            </Typography>
+          </>
+        }
+        dataTestId={`link_pool_type_${rowId}`}
+      />
+      {showChildPagination ? (
+        <div
+          className={classes.childPagination}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+          role="presentation"
+        >
+          <Pagination
+            size="small"
+            position="left"
+            count={childPageCount}
+            page={childPageIndex + 1}
+            paginationHandler={(pageIndex) => {
+              onChildPageChange?.(id, pageIndex);
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+const PoolNameCell = ({ row, onExpensesExportClick, onConstraintsClick }) => {
+  const { original, id: rowId } = row;
+  const { purpose: type, id, name, expenses_export_link: expensesExportLink, policies } = original;
+  const constraintsApplied = !isEmptyArray(policies) && policies.some(({ active }) => active);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center" }}>
+      <Expander row={row} />
+      <PoolLabel disableLink type={type} name={name} dataTestId={`link_pool_${rowId}`} />
+      {!!expensesExportLink && (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            onExpensesExportClick(id);
+          }}
+          style={{ cursor: "pointer" }}
+        >
+          <Icon icon={LinkOutlinedIcon} hasLeftMargin tooltip={{ show: true, messageId: "thisPoolIsShared" }} />
+        </span>
+      )}
+      {constraintsApplied && (
+        <>
+          &nbsp;
+          <Link
+            sx={{ cursor: "pointer", display: "flex" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onConstraintsClick(id);
+            }}
+          >
+            <Tooltip title={<FormattedMessage id="constraintsApplied" />}>
+              <PriorityHighOutlinedIcon fontSize="inherit" />
+            </Tooltip>
+          </Link>
+        </>
+      )}
+    </div>
+  );
+};
+
+const poolName = ({ onExpensesExportClick, onConstraintsClick, onChildPageChange, classes }) => ({
   header: <TextWithDataTestId dataTestId="lbl_name" messageId="name" />,
   accessorKey: "name",
   cell: ({ row }) => {
-    const { original, id: rowId } = row;
-    const { purpose: type, id, name, expenses_export_link: expensesExportLink, policies } = original;
-    const constraintsApplied = !isEmptyArray(policies) && policies.some(({ active }) => active);
-
-    return (
-      <div style={{ display: "flex", alignItems: "center" }}>
-        <Expander row={row} />
-        <PoolLabel disableLink type={type} name={name} dataTestId={`link_pool_${rowId}`} />
-        {!!expensesExportLink && (
-          <span
-            onClick={(e) => {
-              e.stopPropagation();
-              onExpensesExportClick(id);
-            }}
-            style={{ cursor: "pointer" }}
-          >
-            <Icon icon={LinkOutlinedIcon} hasLeftMargin tooltip={{ show: true, messageId: "thisPoolIsShared" }} />
-          </span>
-        )}
-        {constraintsApplied && (
-          <>
-            &nbsp;
-            <Link
-              sx={{ cursor: "pointer", display: "flex" }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onConstraintsClick(id);
-              }}
-            >
-              <Tooltip title={<FormattedMessage id="constraintsApplied" />}>
-                <PriorityHighOutlinedIcon fontSize="inherit" />
-              </Tooltip>
-            </Link>
-          </>
-        )}
-      </div>
-    );
+    if (isPoolTypeGroup(row.original)) {
+      return <PoolTypeGroupNameCell row={row} classes={classes} onChildPageChange={onChildPageChange} />;
+    }
+    return <PoolNameCell row={row} onExpensesExportClick={onExpensesExportClick} onConstraintsClick={onConstraintsClick} />;
   },
   style: {
     whiteSpace: "nowrap",

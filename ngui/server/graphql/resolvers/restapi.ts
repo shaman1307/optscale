@@ -34,6 +34,9 @@ const resolvers: Resolvers = {
         case "snowflake": {
           return "SnowflakeDataSource";
         }
+        case "snowflake_tenant": {
+          return "SnowflakeDataSource";
+        }
         case "kubernetes_cnr": {
           return "K8sDataSource";
         }
@@ -64,6 +67,9 @@ const resolvers: Resolvers = {
     },
     reportImports: async (_, { cloudAccountId, showCompleted }, { dataSources }) => {
       return dataSources.restapi.getReportImports(cloudAccountId, showCompleted ?? false);
+    },
+    resourceDuplicates: async (_, { cloudAccountId }, { dataSources }) => {
+      return dataSources.restapi.getResourceDuplicates(cloudAccountId);
     },
     invitations: async (_, __, { dataSources }) => {
       return dataSources.restapi.getInvitations();

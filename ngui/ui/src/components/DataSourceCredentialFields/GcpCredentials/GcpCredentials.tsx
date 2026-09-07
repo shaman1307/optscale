@@ -10,6 +10,7 @@ export const FIELD_NAMES = Object.freeze({
   CREDENTIALS: "credentials",
   BILLING_DATA_DATASET: "billingDataDatasetName",
   BILLING_DATA_TABLE: "billingDataTableName",
+  BILLING_DATA_RESOURCE_TABLE: "billingDataResourceTableName",
   BILLING_DATA_PROJECT_ID: "billingDataProjectId",
   AUTOMATICALLY_DETECT_PRICING_DATA: "automaticallyDetectPricingData",
   PRICING_DATA_DATASET: "pricingDataDatasetName",
@@ -70,6 +71,22 @@ const GcpCredentials = ({ hidden = [] }: GcpCredentialsProps) => {
             endAdornment: <QuestionMark messageId="billingDataTableNameTooltip" dataTestId="qmark_billing_data_table_name" />,
           }}
           label={<FormattedMessage id="billingDataTableName" />}
+          autoComplete="off"
+        />
+      )}
+      {!isHidden(FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE) && (
+        <TextInput
+          dataTestId="input_billing_data_resource_table_name"
+          name={FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE}
+          InputProps={{
+            endAdornment: (
+              <QuestionMark
+                messageId="billingDataResourceTableNameTooltip"
+                dataTestId="qmark_billing_data_resource_table_name"
+              />
+            ),
+          }}
+          label={<FormattedMessage id="billingDataResourceTableName" />}
           autoComplete="off"
         />
       )}

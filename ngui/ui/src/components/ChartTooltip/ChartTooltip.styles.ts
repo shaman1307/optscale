@@ -10,6 +10,9 @@ const useStyles = makeStyles()((theme) => ({
     paddingBottom: theme.spacing(0.5),
     paddingLeft: theme.spacing(1),
     paddingRight: theme.spacing(1),
+    whiteSpace: "nowrap",
+    width: "max-content",
+    minWidth: "max-content",
     // styles below is a workaround https://github.com/plouc/nivo/issues/2161
     opacity: 0,
     animation: `${keyframes`

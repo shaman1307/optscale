@@ -1,8 +1,20 @@
+import json
+
+from tools.optscale_exceptions.common_exc import (
+    NotFoundException, WrongArgumentsException)
+from tools.optscale_exceptions.http_exc import OptHTTPError
+
 from rest_api.rest_api_server.controllers.available_filters import AvailableFiltersAsyncController
+from rest_api.rest_api_server.handlers.v1.base import run_task
 from rest_api.rest_api_server.handlers.v2.expenses import FilteredExpensesBaseAsyncHandler
+from rest_api.rest_api_server.utils import ModelEncoder
 
 
 class AvailableFiltersAsyncHandler(FilteredExpensesBaseAsyncHandler):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.str_filters.append('facets')
 
     def _get_controller_class(self):
         return AvailableFiltersAsyncController
@@ -31,6 +43,14 @@ class AvailableFiltersAsyncHandler(FilteredExpensesBaseAsyncHandler):
             description: End date (timestamp in seconds)
             required: true
             type: integer
+        -   name: facets
+            in: query
+            description: |
+                Comma-separated facet groups to compute. Supported values:
+                core (default; services/regions/pools/...), tag (tag and
+                without_tag keys), meta (meta keys). Example: core or tag,meta.
+            required: false
+            type: string
         -   name: first_seen_gte
             in: query
             description: |
@@ -519,4 +539,14 @@ class AvailableFiltersAsyncHandler(FilteredExpensesBaseAsyncHandler):
         - token: []
         - secret: []
         """
-        await super().get(organization_id, **url_params)
+        if not self.check_cluster_secret(raises=False):
+            await self.check_permissions(
+                'INFO_ORGANIZATION', 'organization', organization_id)
+        args = self.get_expense_arguments()
+        try:
+            res = await run_task(self.controller.get, organization_id, **args)
+        except NotFoundException as exc:
+            raise OptHTTPError.from_opt_exception(404, exc)
+        except WrongArgumentsException as exc:
+            raise OptHTTPError.from_opt_exception(400, exc)
+        self.write(json.dumps(res, cls=ModelEncoder))

@@ -167,12 +167,15 @@ class MetricsProcessor(object):
         return CloudAdapter.get_adapter(cloud_config)
 
     def update_getting_metrics_time(self, ts=None):
+        # Clear prior attempt error so UI "Monitoring metrics import" does not
+        # stick after a successful run (including zero metric-eligible resources).
         if ts is None:
             ts = int(time.time())
         self.rest_client.cloud_account_update(
             self.cloud_account_id,
             {'last_getting_metrics_at': ts,
-             'last_getting_metric_attempt_at': ts})
+             'last_getting_metric_attempt_at': ts,
+             'last_getting_metric_attempt_error': None})
 
     def update_getting_metrics_attempt(self, ts=None, error=None):
         if ts is None:
@@ -221,6 +224,8 @@ class MetricsProcessor(object):
                 'meta.source_cluster_id', 'meta.ram']
             ))
         if not cloud_account_resources:
+            # Still a successful run — nothing to collect; clear sticky errors.
+            self.update_getting_metrics_time()
             return []
         resource_map = {
             x['_id']: {

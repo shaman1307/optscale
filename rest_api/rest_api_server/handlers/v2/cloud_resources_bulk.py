@@ -125,6 +125,7 @@ class CloudResourceAsyncBulkCollectionHandler(BaseAsyncCollectionHandler,
 
         return_resources = self.get_arg('return_resources', bool, False)
         is_report_import = self.get_arg('is_report_import', bool, False)
+        invoice_month = self.get_arg('invoice_month', str)
 
         data = self._request_body()
         if not isinstance(data, dict):
@@ -146,7 +147,8 @@ class CloudResourceAsyncBulkCollectionHandler(BaseAsyncCollectionHandler,
             resources=resources,
             behavior=behavior,
             return_resources=return_resources,
-            is_report_import=is_report_import
+            is_report_import=is_report_import,
+            invoice_month=invoice_month
         )
         if return_resources:
             self.set_status(200)

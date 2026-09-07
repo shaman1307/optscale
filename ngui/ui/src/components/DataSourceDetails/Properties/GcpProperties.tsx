@@ -4,7 +4,12 @@ import { GcpPropertiesProps } from "./types";
 
 const GcpProperties = ({ accountId, createdAt, config = {} }: GcpPropertiesProps) => {
   const { billing_data: billingData, pricing_data: pricingData } = config;
-  const { dataset_name: billingDatasetName, table_name: billingTableName, project_id: billingProjectId } = billingData ?? {};
+  const {
+    dataset_name: billingDatasetName,
+    table_name: billingTableName,
+    resource_table_name: billingResourceTableName,
+    project_id: billingProjectId,
+  } = billingData ?? {};
   const { dataset_name: pricingDatasetName, table_name: pricingTableName, project_id: pricingProjectId } = pricingData ?? {};
 
   return (
@@ -35,6 +40,13 @@ const GcpProperties = ({ accountId, createdAt, config = {} }: GcpPropertiesProps
         value={billingTableName}
         dataTestIds={{ key: "p_billing_table_name_key", value: "p_billing_table_name_value" }}
       />
+      {billingResourceTableName && (
+        <KeyValueLabel
+          keyMessageId="billingDataResourceTableName"
+          value={billingResourceTableName}
+          dataTestIds={{ key: "p_billing_resource_table_name_key", value: "p_billing_resource_table_name_value" }}
+        />
+      )}
       {billingProjectId && (
         <KeyValueLabel
           keyMessageId="billingDataProjectId"

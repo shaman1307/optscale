@@ -21,6 +21,7 @@ import {
   AZURE_TENANT,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   KUBERNETES_CNR,
   ALIBABA_CNR,
   ENVIRONMENT,
@@ -61,6 +62,12 @@ export const getSettings = (type) =>
       logo: snowflakeLogo,
       disconnectQuestionId: "disconnectSnowflakeQuestion",
       cloudTypeMessageId: CLOUD_ACCOUNT_TYPE[SNOWFLAKE],
+    },
+    [SNOWFLAKE_TENANT]: {
+      icon: SnowflakeLogoIcon,
+      logo: snowflakeLogo,
+      disconnectQuestionId: "disconnectSnowflakeQuestion",
+      cloudTypeMessageId: CLOUD_ACCOUNT_TYPE[SNOWFLAKE_TENANT],
     },
     [KUBERNETES_CNR]: {
       icon: K8sLogoIcon,

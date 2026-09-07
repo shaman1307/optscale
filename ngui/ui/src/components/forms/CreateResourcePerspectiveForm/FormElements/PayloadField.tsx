@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { FormHelperText } from "@mui/material";
 import { useFormContext } from "react-hook-form";
 import { useIntl } from "react-intl";
-import { validatePerspectiveSchema } from "utils/validation";
+import { validatePerspectiveSchema } from "utils/perspectiveValidation";
 import { FIELD_NAMES } from "../constants";
 
 const FIELD_NAME = FIELD_NAMES.PAYLOAD;

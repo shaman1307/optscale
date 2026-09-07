@@ -28,6 +28,7 @@ export type GcpPropertiesProps = BasePropertiesProps & {
     billing_data?: {
       dataset_name?: string;
       table_name?: string;
+      resource_table_name?: string;
       project_id?: string;
     };
     pricing_data?: {
@@ -87,6 +88,8 @@ export type SnowflakePropertiesProps = BasePropertiesProps & {
     user?: string;
     role?: string;
     warehouse?: string;
+    backup_warehouse?: string;
+    region?: string;
   };
 };
 

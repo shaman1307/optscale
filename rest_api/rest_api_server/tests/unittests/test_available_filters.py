@@ -206,7 +206,8 @@ class TestAvailableFiltersApi(TestApiBase):
             {
                 'id': self.org['pool_id'],
                 'name': self.org['name'],
-                'purpose': 'business_unit'
+                'purpose': 'business_unit',
+                'parent_id': None
             }
         ])
 
@@ -219,3 +220,195 @@ class TestAvailableFiltersApi(TestApiBase):
             org['id'], 0, max_timestamp, {})
         self.assertEqual(code, 200)
         self.assertEqual(response['filter_values'], {})
+
+    def test_available_filters_facets_core_empty_tags(self):
+        resource = {
+            'cloud_resource_id': self.gen_id(),
+            'name': 'name',
+            'resource_type': 'Instance',
+            'employee_id': self.employee1['id'],
+            'pool_id': self.org['pool_id'],
+            'last_seen': self.end_ts,
+            'first_seen': self.start_ts,
+            'region': 'eu-central-1',
+            'service_name': 'AmazonEC2',
+            'tags': {'env': 'prod'},
+            'meta': {'flavor': 't2.micro'},
+        }
+        _, res = self.cloud_resource_create(self.cloud_acc1['id'], resource)
+        self.resources_collection.update_one(
+            filter={'_id': res['id']},
+            update={'$set': {
+                '_first_seen_dt': datetime.fromtimestamp(self.start_ts),
+                '_last_seen_dt': datetime.fromtimestamp(self.end_ts),
+            }})
+        code, response = self.client.available_filters_get(
+            self.org_id, self.start_ts, self.end_ts)
+        self.assertEqual(code, 200)
+        filter_values = response['filter_values']
+        self.assertTrue(any(
+            ca['id'] == self.cloud_acc1['id']
+            for ca in filter_values['cloud_account']))
+        self.assertTrue(any(
+            pool['id'] == self.org['pool_id']
+            for pool in filter_values['pool']))
+        self.assertTrue(any(
+            sn.get('name') == 'AmazonEC2'
+            for sn in filter_values['service_name'] if isinstance(sn, dict)))
+        self.assertEqual(filter_values.get('tag'), [])
+        self.assertEqual(filter_values.get('without_tag'), [])
+        self.assertEqual(filter_values.get('meta'), [])
+
+    def test_available_filters_facets_tag(self):
+        resource = {
+            'cloud_resource_id': self.gen_id(),
+            'name': 'name',
+            'resource_type': 'Instance',
+            'employee_id': self.employee1['id'],
+            'pool_id': self.org['pool_id'],
+            'last_seen': self.end_ts,
+            'first_seen': self.start_ts,
+            'region': 'eu-central-1',
+            'tags': {'env': 'prod', 'team': 'finops'},
+            'meta': {},
+        }
+        _, res = self.cloud_resource_create(self.cloud_acc1['id'], resource)
+        self.resources_collection.update_one(
+            filter={'_id': res['id']},
+            update={'$set': {
+                '_first_seen_dt': datetime.fromtimestamp(self.start_ts),
+                '_last_seen_dt': datetime.fromtimestamp(self.end_ts),
+            }})
+        code, response = self.client.available_filters_get(
+            self.org_id, self.start_ts, self.end_ts, {'facets': 'tag'})
+        self.assertEqual(code, 200)
+        filter_values = response['filter_values']
+        self.assertCountEqual(filter_values['tag'], ['env', 'team'])
+        self.assertCountEqual(filter_values['without_tag'], ['env', 'team'])
+        self.assertFalse('cloud_account' in filter_values)
+
+    def test_available_filters_facets_meta(self):
+        resource = {
+            'cloud_resource_id': self.gen_id(),
+            'name': 'name',
+            'resource_type': 'Instance',
+            'employee_id': self.employee1['id'],
+            'pool_id': self.org['pool_id'],
+            'last_seen': self.end_ts,
+            'first_seen': self.start_ts,
+            'region': 'eu-central-1',
+            'tags': {},
+            'meta': {'flavor': 't2.micro', 'vpc_id': 'vpc-1'},
+        }
+        _, res = self.cloud_resource_create(self.cloud_acc1['id'], resource)
+        self.resources_collection.update_one(
+            filter={'_id': res['id']},
+            update={'$set': {
+                '_first_seen_dt': datetime.fromtimestamp(self.start_ts),
+                '_last_seen_dt': datetime.fromtimestamp(self.end_ts),
+            }})
+        code, response = self.client.available_filters_get(
+            self.org_id, self.start_ts, self.end_ts, {'facets': 'meta'})
+        self.assertEqual(code, 200)
+        meta_keys = response['filter_values']['meta']
+        self.assertIn('flavor', meta_keys)
+        self.assertIn('vpc_id', meta_keys)
+
+    def test_available_filters_invalid_facets(self):
+        code, response = self.client.available_filters_get(
+            self.org_id, self.start_ts, self.end_ts, {'facets': 'nope'})
+        self.assertEqual(code, 400)
+        self.assertEqual(response['error']['error_code'], 'OE0212')
+
+    def test_available_filters_snowflake_region(self):
+        """Top-level region on snowflake resources feeds the region facet."""
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'HW44440',
+                'warnings': [],
+                'region': 'AWS_US_EAST_1',
+            }).start()
+        code, sf_acc = self.client.cloud_account_create(self.org_id, {
+            'name': 'snowflake filters',
+            'type': 'snowflake',
+            'config': {
+                'account': 'PUBLICIS-PROD',
+                'user': 'svc',
+                'private_key': (
+                    '-----BEGIN PRIVATE KEY-----\n'
+                    'MIIEvQIBADANBgkq\n'
+                    '-----END PRIVATE KEY-----'),
+                'role': 'ACCOUNTADMIN',
+                'warehouse': 'COMPUTE_WH',
+                'billing_source': 'account_usage',
+            },
+        })
+        self.assertEqual(code, 201)
+        resource = {
+            'cloud_resource_id': self.gen_id(),
+            'name': 'WH',
+            'resource_type': 'COMPUTE',
+            'employee_id': self.employee1['id'],
+            'pool_id': self.org['pool_id'],
+            'last_seen': self.end_ts,
+            'first_seen': self.start_ts,
+            'region': 'AWS_US_EAST_1',
+            'meta': {},
+        }
+        _, res = self.cloud_resource_create(sf_acc['id'], resource)
+        self.resources_collection.update_one(
+            filter={'_id': res['id']},
+            update={'$set': {
+                '_first_seen_dt': datetime.fromtimestamp(self.start_ts),
+                '_last_seen_dt': datetime.fromtimestamp(self.end_ts),
+            }})
+        code, response = self.client.available_filters_get(
+            self.org_id, self.start_ts, self.end_ts, {
+                'cloud_account_id': sf_acc['id'],
+                'facets': 'core',
+            })
+        self.assertEqual(code, 200)
+        regions = response['filter_values'].get('region') or []
+        region_names = [
+            r.get('name') if isinstance(r, dict) else r for r in regions]
+        self.assertIn('AWS_US_EAST_1', region_names)
+        cloud_types = {
+            r.get('cloud_type') for r in regions if isinstance(r, dict)}
+        self.assertIn('snowflake', cloud_types)
+
+    def test_available_filters_virtual_tag_facet(self):
+        resource = {
+            'cloud_resource_id': self.gen_id(),
+            'name': 'vt-name',
+            'resource_type': 'Instance',
+            'employee_id': self.employee1['id'],
+            'pool_id': self.org['pool_id'],
+            'last_seen': self.end_ts,
+            'first_seen': self.start_ts,
+            'region': 'eu-central-1',
+            'meta': {},
+        }
+        _, res = self.cloud_resource_create(self.cloud_acc1['id'], resource)
+        self.resources_collection.update_one(
+            filter={'_id': res['id']},
+            update={'$set': {
+                '_first_seen_dt': datetime.fromtimestamp(self.start_ts),
+                '_last_seen_dt': datetime.fromtimestamp(self.end_ts),
+                'virtual_tags_by_quarter': {
+                    '2026Q3': [{'key': 'PRODUCT', 'value': 'SNS',
+                                'share': 100}],
+                },
+            }})
+        code, response = self.client.available_filters_get(
+            self.org_id, self.start_ts, self.end_ts, {
+                'facets': 'virtual_tag',
+            })
+        self.assertEqual(code, 200, response)
+        pairs = [
+            (row.get('key'), row.get('value'))
+            for row in (response.get('filter_values') or {}).get(
+                'virtual_tag') or []
+            if row.get('key')
+        ]
+        self.assertIn(('PRODUCT', 'SNS'), pairs)

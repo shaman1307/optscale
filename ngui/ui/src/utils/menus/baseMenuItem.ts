@@ -9,6 +9,8 @@ class BaseMenuItem {
   messageId = "";
 
   dataTestId = "";
+
+  requiresKubernetes = false;
 }
 
 export default BaseMenuItem;

@@ -19,6 +19,20 @@ const useStyles = makeStyles()((theme) => ({
     width: "100%",
     alignItems: "center",
   },
+  identity: {
+    display: "flex",
+    flexDirection: "row",
+    flex: 1,
+    minWidth: 0,
+    alignItems: "flex-start",
+  },
+  identityText: {
+    minWidth: 0,
+  },
+  cost: {
+    flexShrink: 0,
+    marginLeft: theme.spacing(1),
+  },
   bar: {
     position: "absolute",
     top: 0,

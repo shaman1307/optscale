@@ -92,6 +92,7 @@ etcd:
     report_imports:
       not_processed_threshold_secs: {{ .Values.import_reports.not_processed_threshold_secs }}
       message_expiration_secs: {{ .Values.import_reports.message_expiration_secs }}
+      incremental_scheduler_enabled: true
     opentelemetry:
       enable_asyncio: true
       enable_threading: true

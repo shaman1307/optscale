@@ -3,8 +3,12 @@ from collections import defaultdict
 from datetime import datetime
 
 from rest_api.rest_api_server.controllers.base_async import BaseAsyncControllerWrapper
-from rest_api.rest_api_server.controllers.breakdown_expense import BreakdownBaseController
+from rest_api.rest_api_server.controllers.breakdown_expense import (
+    BreakdownBaseController, SUBPOOL_BREAKDOWN)
 from rest_api.rest_api_server.exceptions import Err
+from rest_api.rest_api_server.utils import (
+    is_virtual_tag_breakdown, virtual_tag_breakdown_key,
+    virtual_tags_for_quarter, current_quarter, quarters_for_invoice_months)
 
 from tools.optscale_exceptions.common_exc import WrongArgumentsException
 
@@ -36,6 +40,10 @@ class ResourceCountController(BreakdownBaseController):
     def _get_resources_breakdowns(
             self, match_query, breakdown_by, start_date, end_date,
             collected_filters):
+        if is_virtual_tag_breakdown(breakdown_by):
+            return self._get_virtual_tag_count_breakdowns(
+                match_query, breakdown_by, start_date, end_date,
+                collected_filters)
         breakdowns = self._get_breakdown_dates(start_date, end_date)
         if breakdown_by == 'resource_type':
             group_value = {
@@ -44,7 +52,8 @@ class ResourceCountController(BreakdownBaseController):
                 'is_environment': '$is_environment'
             }
         else:
-            group_value = '$%s' % breakdown_by
+            group_field = self.mongo_breakdown_field(breakdown_by)
+            group_value = '$%s' % group_field
 
         match_stage = {
             '$match': match_query
@@ -116,6 +125,75 @@ class ResourceCountController(BreakdownBaseController):
         ]
         return self.resources_collection.aggregate(pipeline, allowDiskUse=True)
 
+    def _get_virtual_tag_count_breakdowns(
+            self, match_query, breakdown_by, start_date, end_date,
+            collected_filters):
+        """Count +1 per matching VT value (contains). Share is not applied."""
+        key = virtual_tag_breakdown_key(breakdown_by)
+        breakdowns = self._get_breakdown_dates(start_date, end_date)
+        first_day = breakdowns[0] if breakdowns else 0
+        totals = defaultdict(int)
+        counts = defaultdict(lambda: defaultdict(int))
+        created = defaultdict(lambda: defaultdict(int))
+        deleted = defaultdict(lambda: defaultdict(int))
+        filter_values = {field: set() for field in collected_filters}
+        unique_ids = set()
+        for resource in self.resources_collection.find(match_query):
+            unique_ids.add(resource['_id'])
+            for field in collected_filters:
+                filter_values[field].add(resource.get(field))
+            first_seen = int(resource.get('first_seen') or 0)
+            last_seen = int(resource.get('last_seen') or 0)
+            first_bd = first_seen - (first_seen % SECONDS_IN_DAY)
+            last_bd = last_seen - (last_seen % SECONDS_IN_DAY)
+            values = [
+                alloc.get('value')
+                for quarter in (
+                    quarters_for_invoice_months(
+                        getattr(self, 'invoice_months', None))
+                    or [current_quarter()])
+                for alloc in virtual_tags_for_quarter(resource, quarter)
+                if isinstance(alloc, dict) and alloc.get('key') == key
+            ]
+            for value in values:
+                totals[value] += 1
+                for day in breakdowns:
+                    if first_bd <= day <= last_bd:
+                        counts[value][day] += 1
+                    if first_bd == day and day != first_day:
+                        created[value][day] += 1
+                    if last_bd == day - SECONDS_IN_DAY and day != first_day:
+                        deleted[value][day] += 1
+        day_count = len(breakdowns) or 1
+        breakdown_rows = []
+        totals_rows = []
+        for value, total in totals.items():
+            day_counts = {
+                str(day): counts[value].get(day, 0) for day in breakdowns}
+            breakdown_rows.append({
+                '_id': value,
+                'breakdowns': {
+                    'count': day_counts,
+                    'created': {
+                        str(day): created[value].get(day, 0)
+                        for day in breakdowns},
+                    'deleted_day_before': {
+                        str(day): deleted[value].get(day, 0)
+                        for day in breakdowns},
+                    'average': sum(day_counts.values()) / day_count,
+                },
+            })
+            totals_rows.append({'_id': value, 'count': total})
+        facet = {
+            'total': [{'count': len(unique_ids)}] if unique_ids else [],
+            'totals': totals_rows,
+            'breakdowns': breakdown_rows,
+        }
+        for field in collected_filters:
+            values = list(filter_values[field])
+            facet[field] = [{field: values}] if values else []
+        return [facet]
+
     def get_resource_type_condition(self, resource_types):
         if not resource_types:
             return [{'cluster_id': {'$exists': False}}]
@@ -150,6 +228,12 @@ class ResourceCountController(BreakdownBaseController):
 
     def get_resources_data(self, organization_id, query_filters, data_filters,
                            extra_params):
+        extra_params = dict(extra_params)
+        breakdown_by = extra_params.get('breakdown_by') or query_filters.pop(
+            'breakdown_by', None)
+        if isinstance(breakdown_by, list):
+            breakdown_by = breakdown_by[0] if breakdown_by else None
+        extra_params['breakdown_by'] = breakdown_by
         query = self.generate_filters_pipeline(
             organization_id, self.start_date, self.end_date, query_filters,
             data_filters)
@@ -157,6 +241,45 @@ class ResourceCountController(BreakdownBaseController):
             query, extra_params['breakdown_by'],
             self.start_date, self.end_date, self.collected_filters)
         return raw_result
+
+    def _collapse_resource_count_by_subpool(
+            self, organization_id, row, result):
+        pool_ids = {x['_id'] for x in row.get('totals', [])}
+        for breakdown_by_type in row.get('breakdowns', []):
+            pool_ids.add(breakdown_by_type['_id'])
+        id_to_name, name_entities = self.build_subpool_name_map(
+            organization_id, pool_ids)
+
+        counts = defaultdict(lambda: {'total': 0, 'average': 0})
+        for x in row.get('totals', []):
+            key = id_to_name.get(x['_id'])
+            counts[key]['total'] += x['count']
+            if key in name_entities:
+                counts[key].update(name_entities[key])
+
+        for breakdown_by_type in row.get('breakdowns', []):
+            key = id_to_name.get(breakdown_by_type['_id'])
+            br = breakdown_by_type['breakdowns']
+            counts[key]['average'] = (
+                counts[key].get('average', 0) + br.get('average', 0))
+            if key in name_entities:
+                counts[key].update(name_entities[key])
+            for timestamp, r_count in br['count'].items():
+                if timestamp not in result['breakdown']:
+                    result['breakdown'][timestamp] = {}
+                cell = result['breakdown'][timestamp].setdefault(key, {
+                    'count': 0,
+                    'created': 0,
+                    'deleted_day_before': 0,
+                    **name_entities.get(key, {}),
+                })
+                cell['count'] += r_count
+                cell['created'] += br['created'][timestamp]
+                cell['deleted_day_before'] += br['deleted_day_before'][
+                    timestamp]
+
+        result['counts'] = dict(counts)
+        return result
 
     def process_data(self, breakdown_info, organization_id, filters, **kwargs):
         breakdown_by = kwargs['breakdown_by']
@@ -170,14 +293,19 @@ class ResourceCountController(BreakdownBaseController):
                 unique_values[f].update(row[f][0][f])
         _, organization_cloud_accs = self.get_organization_and_cloud_accs(
             organization_id)
-        entities = self.get_db_entities_info(
-            organization_id, organization_cloud_accs, unique_values)
-        breakdown_entities = self.get_breakdown_entity_map(
-            entities, breakdown_by)
         if row['total']:
             result['count'] = row['total'][0]['count']
         else:
             result['count'] = 0
+
+        if breakdown_by == SUBPOOL_BREAKDOWN:
+            return self._collapse_resource_count_by_subpool(
+                organization_id, row, result)
+
+        entities = self.get_db_entities_info(
+            organization_id, organization_cloud_accs, unique_values)
+        breakdown_entities = self.get_breakdown_entity_map(
+            entities, breakdown_by)
         if breakdown_by == 'resource_type':
             result['counts'] = {
                 self.get_value_resource_type(x['_id']): {

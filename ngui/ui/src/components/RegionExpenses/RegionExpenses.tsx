@@ -25,24 +25,32 @@ import {
   FORMATTED_MONEY_TYPES,
   EMPTY_UUID,
   DATE_RANGE_TYPE,
+  INVOICE_MONTHS_FILTER,
 } from "utils/constants";
+import { normalizeInvoiceMonths } from "utils/costPeriod";
 import { SPACING_2, getPoolColorStatus } from "utils/layouts";
 import { REGION_EXPENSES_HEIGHT } from "utils/maps";
 import { percentXofY, intPercentXofY } from "utils/math";
+import { getSearchParams } from "utils/network";
 
-const getGoToExpensesLink = (name, startDate, endDate) =>
-  getResourcesExpensesUrl({
-    computedParams: `${REGION_FILTER}=${name}`,
-    sStartDate: startDate,
-    sEndDate: endDate,
-  });
+const getGoToExpensesLink = (name, startDate, endDate, invoiceMonths) =>
+  invoiceMonths?.length
+    ? getResourcesExpensesUrl({
+        computedParams: `${REGION_FILTER}=${name}`,
+        [INVOICE_MONTHS_FILTER]: invoiceMonths,
+      })
+    : getResourcesExpensesUrl({
+        computedParams: `${REGION_FILTER}=${name}`,
+        sStartDate: startDate,
+        sEndDate: endDate,
+      });
 
 const getFilteredMarkers = (markers, total, getColor) =>
   markers
     .filter((marker) => marker.total)
     .map((marker) => ({ ...marker, percent: percentXofY(marker.total, total), color: getColor(marker.type) }));
 
-const getColumns = (navigate, startDate, endDate) => [
+const getColumns = (navigate, startDate, endDate, invoiceMonths) => [
   {
     header: intl.formatMessage({ id: "name" }),
     accessorKey: "name",
@@ -68,7 +76,11 @@ const getColumns = (navigate, startDate, endDate) => [
     id: "actions",
     cell: ({ row: { original } }) => (
       <IconButton
-        onClick={() => navigate(getGoToExpensesLink(original.id === null ? EMPTY_UUID : original.name, startDate, endDate))}
+        onClick={() =>
+          navigate(
+            getGoToExpensesLink(original.id === null ? EMPTY_UUID : original.name, startDate, endDate, invoiceMonths)
+          )
+        }
         icon={<ListAltOutlinedIcon />}
         tooltip={{
           show: true,
@@ -87,7 +99,11 @@ const RegionExpenses = ({ expenses, isLoading = false }) => {
   const { regions: markers = [], total = 0, previous_total: previousTotal = 0 } = expenses;
   const dates = useReactiveDefaultDateRange(DATE_RANGE_TYPE.EXPENSES);
   const [startDateTimestamp, endDateTimestamp] = dates;
-  const columns = useMemo(() => getColumns(navigate, dates[0], dates[1]), [navigate, dates]);
+  const invoiceMonths = normalizeInvoiceMonths(getSearchParams()[INVOICE_MONTHS_FILTER]);
+  const columns = useMemo(
+    () => getColumns(navigate, dates[0], dates[1], invoiceMonths),
+    [navigate, dates, invoiceMonths]
+  );
 
   const data = useMemo(() => {
     const getColor = getColorScale(theme.palette.chart);

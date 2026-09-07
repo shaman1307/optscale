@@ -285,28 +285,25 @@ class TestResourcesCountApi(TestApiBase):
         code, res = self.client.resources_count_get(
             self.org_id, self.day1, self.day2_inside, 'pool_id')
         self.assertEqual(code, 200)
+        pool_fields = ['id', 'name', 'purpose', 'parent_id']
         breakdown = {
             str(self.day1): {
                 self.sub_pool1['id']: {
                     'count': 5, 'created': 0, 'deleted_day_before': 0,
-                    **self.extract_fields(
-                        self.sub_pool1, ['id', 'name', 'purpose'])
+                    **self.extract_fields(self.sub_pool1, pool_fields)
                 },
                 self.sub_pool2['id']: {
                     'count': 5, 'created': 0, 'deleted_day_before': 0,
-                    **self.extract_fields(
-                        self.sub_pool2, ['id', 'name', 'purpose'])
+                    **self.extract_fields(self.sub_pool2, pool_fields)
                 }},
             str(self.day2): {
                 self.sub_pool1['id']: {
                     'count': 5, 'created': 5, 'deleted_day_before': 5,
-                    **self.extract_fields(
-                        self.sub_pool1, ['id', 'name', 'purpose'])
+                    **self.extract_fields(self.sub_pool1, pool_fields)
                 },
                 self.sub_pool2['id']: {
                     'count': 5, 'created': 0, 'deleted_day_before': 0,
-                    **self.extract_fields(
-                        self.sub_pool2, ['id', 'name', 'purpose'])
+                    **self.extract_fields(self.sub_pool2, pool_fields)
                 }}
         }
         self.assertEqual(res['count'], 15)
@@ -314,11 +311,11 @@ class TestResourcesCountApi(TestApiBase):
         counts = {
             self.sub_pool1['id']: {
                 'total': 10, 'average': 5, **self.extract_fields(
-                    self.sub_pool1, ['id', 'name', 'purpose'])
+                    self.sub_pool1, pool_fields)
             },
             self.sub_pool2['id']: {
                 'total': 5, 'average': 5, **self.extract_fields(
-                    self.sub_pool2, ['id', 'name', 'purpose'])
+                    self.sub_pool2, pool_fields)
             }}
         self.assertEqual(res['counts'], counts)
 
@@ -567,7 +564,7 @@ class TestResourcesCountApi(TestApiBase):
         self.assertEqual(res['count'], 2)
         self.assertEqual(res['breakdown'], breakdown)
         self.assertEqual(len(filt_res['filter_values']['cloud_account']),
-                         len(cloud_accounts + [None]))
+                         len(cloud_accounts))
         counts = {'%s:cluster' % type_name: {'total': 2, 'average': 2}}
         self.assertEqual(res['counts'], counts)
 

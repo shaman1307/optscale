@@ -10,8 +10,10 @@ import rest_api.rest_api_server.handlers.v2.organizations
 import rest_api.rest_api_server.handlers.v2.organization_options
 import rest_api.rest_api_server.handlers.v2.report_uploads
 import rest_api.rest_api_server.handlers.v2.schedule_imports
+import rest_api.rest_api_server.handlers.v2.report_import_queue_stats
 import rest_api.rest_api_server.handlers.v2.expenses
 import rest_api.rest_api_server.handlers.v2.report_imports
+import rest_api.rest_api_server.handlers.v2.resource_duplicates
 import rest_api.rest_api_server.handlers.v2.invites
 import rest_api.rest_api_server.handlers.v2.assignment_request
 import rest_api.rest_api_server.handlers.v2.assignment
@@ -25,12 +27,14 @@ import rest_api.rest_api_server.handlers.v2.pool_employees
 import rest_api.rest_api_server.handlers.v2.pool_expenses
 import rest_api.rest_api_server.handlers.v2.cloud_resources_bulk
 import rest_api.rest_api_server.handlers.v2.rule
+import rest_api.rest_api_server.handlers.v2.virtual_tags
 import rest_api.rest_api_server.handlers.v2.pool_policies
 import rest_api.rest_api_server.handlers.v2.limit_hits
 import rest_api.rest_api_server.handlers.v2.resource_constraints
 import rest_api.rest_api_server.handlers.v2.checklists
 import rest_api.rest_api_server.handlers.v2.optimizations
 import rest_api.rest_api_server.handlers.v2.live_demos
+import rest_api.rest_api_server.handlers.v2.sso_login_config
 import rest_api.rest_api_server.handlers.v2.resources_observer
 import rest_api.rest_api_server.handlers.v2.discovery_infos
 import rest_api.rest_api_server.handlers.v2.discovery_infos_bulk
@@ -58,6 +62,8 @@ import rest_api.rest_api_server.handlers.v2.jira_issue_attachments
 import rest_api.rest_api_server.handlers.v2.audit_results
 import rest_api.rest_api_server.handlers.v2.resources_count
 import rest_api.rest_api_server.handlers.v2.available_filters
+import rest_api.rest_api_server.handlers.v2.invoice_months
+import rest_api.rest_api_server.handlers.v2.import_scheduler
 import rest_api.rest_api_server.handlers.v2.breakdown_expenses
 import rest_api.rest_api_server.handlers.v2.organization_constraints
 import rest_api.rest_api_server.handlers.v2.organization_limit_hits

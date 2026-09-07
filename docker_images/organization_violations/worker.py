@@ -160,15 +160,27 @@ class OrganizationViolationsWorker(ConsumerMixin):
 
         LOG.info(f'Getting expenses for constraint {constraint_id} for period'
                  f' start: {start_date}, end: {end_date}')
+        breakdown_by = 'resource_type'
+        vt_values = set()
+        for item in filters.get('virtual_tag') or []:
+            if isinstance(item, str) and ':' in item:
+                key, value = item.split(':', 1)
+                breakdown_by = 'virtual_tag:%s' % key
+                vt_values.add(value)
         _, expenses = self.rest_cl.breakdown_expenses_get(
             organization_id, start_date, end_date,
-            breakdown_by='resource_type', params=filters)
+            breakdown_by=breakdown_by, params=filters)
 
         threshold_total = 0
         threshold_breakdown = {}
         todays = 0
         for ts, val in expenses['breakdown'].items():
-            ts_cost = sum([x.get('cost', 0) for x in val.values()])
+            if vt_values:
+                ts_cost = sum(
+                    x.get('cost', 0)
+                    for key, x in val.items() if key in vt_values)
+            else:
+                ts_cost = sum([x.get('cost', 0) for x in val.values()])
             if int(ts) > yesterday_end_date:
                 todays = ts_cost
                 continue
@@ -177,6 +189,30 @@ class OrganizationViolationsWorker(ConsumerMixin):
         average = (threshold_total / len(threshold_breakdown)
                    if len(threshold_breakdown) else 0)
         return todays, average, threshold_breakdown
+
+    def _expense_total(self, organization_id, start_date, end_date, filters):
+        """Sum expenses; apply cost×share when filtering by one VT key."""
+        vt_values = set()
+        vt_keys = set()
+        for item in filters.get('virtual_tag') or []:
+            if isinstance(item, str) and ':' in item:
+                key, value = item.split(':', 1)
+                vt_keys.add(key)
+                vt_values.add(value)
+        if len(vt_keys) == 1:
+            _, expenses = self.rest_cl.breakdown_expenses_get(
+                organization_id, start_date, end_date,
+                breakdown_by='virtual_tag:%s' % next(iter(vt_keys)),
+                params=filters)
+            total = 0
+            for val in expenses.get('breakdown', {}).values():
+                total += sum(
+                    item.get('cost', 0)
+                    for key, item in val.items() if key in vt_values)
+            return total
+        _, resp = self.rest_cl.breakdown_expenses_get(
+            organization_id, start_date, end_date, params=filters)
+        return resp['total']
 
     @staticmethod
     def get_nil_uuid():
@@ -312,18 +348,18 @@ class OrganizationViolationsWorker(ConsumerMixin):
         end_date = self.today_end_ts(date)
         filters = self._collapsed_filters(constraint['filters'])
         c_id = constraint['id']
-        _, resp = self.rest_cl.breakdown_expenses_get(
-            organization_id, start_date, end_date, params=filters)
+        total = self._expense_total(
+            organization_id, start_date, end_date, filters)
         LOG.info(f'Getting expenses value for constraint '
                  f'{c_id} for period start: {start_date}, end: {end_date}')
         run_result = self._get_budget_and_quota_run_result(
-            current=resp['total'], limit=monthly_budget)
+            current=total, limit=monthly_budget)
         result = [run_result]
-        if resp['total'] > monthly_budget:
+        if total > monthly_budget:
             result.append(self._update_limit_hit(
                 organization_id, constraint, notifications, start_date,
                 int(date.timestamp()), constraint_limit=monthly_budget,
-                value=resp['total'], run_result=run_result))
+                value=total, run_result=run_result))
         return result
 
     def process_expiring_budget(self, constraint, organization_id, date,
@@ -343,11 +379,11 @@ class OrganizationViolationsWorker(ConsumerMixin):
         time_periods = self._slice_time_period_by_years(start_date, end_date)
         total_expenses = 0
         for start_ts, end_ts in time_periods:
-            _, resp = self.rest_cl.breakdown_expenses_get(
-                organization_id, start_ts, end_ts, params=filters)
+            period_total = self._expense_total(
+                organization_id, start_ts, end_ts, filters)
             LOG.info(f'Getting expenses value for constraint '
                      f'{c_id} for period start: {start_ts}, end: {end_ts}')
-            total_expenses += resp['total']
+            total_expenses += period_total
         run_result = self._get_budget_and_quota_run_result(
             current=total_expenses, limit=total_budget)
         result = [run_result]

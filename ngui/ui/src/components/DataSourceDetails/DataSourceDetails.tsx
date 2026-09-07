@@ -12,6 +12,7 @@ import {
   NEBIUS,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   GCP_TENANT,
 } from "utils/constants";
 import { formatUTC } from "utils/datetime";
@@ -42,6 +43,7 @@ const propertiesMap: PropertiesMap = {
   [NEBIUS]: NebiusProperties,
   [DATABRICKS]: DatabricksProperties,
   [SNOWFLAKE]: SnowflakeProperties,
+  [SNOWFLAKE_TENANT]: SnowflakeProperties,
 };
 
 const renderHelpMap = (id: string, config: ConfigMap) => ({
@@ -55,13 +57,15 @@ const renderHelpMap = (id: string, config: ConfigMap) => ({
   [NEBIUS]: null,
   [DATABRICKS]: null,
   [SNOWFLAKE]: null,
+  [SNOWFLAKE_TENANT]: null,
 });
 
-const childrenListMap = (id: string) => ({
+const childrenListMap = (id: string, isSynthetic?: boolean) => ({
   [AZURE_TENANT]: <ChildrenList parentId={id} />,
   [GCP_TENANT]: <ChildrenList parentId={id} />,
+  [SNOWFLAKE_TENANT]: <ChildrenList parentId={id} />,
+  [AWS_CNR]: isSynthetic ? <ChildrenList filterChildren={({ type }) => type === AWS_CNR} /> : null,
   [KUBERNETES_CNR]: null,
-  [AWS_CNR]: null,
   [AZURE_CNR]: null,
   [GCP_CNR]: null,
   [ALIBABA_CNR]: null,
@@ -70,10 +74,18 @@ const childrenListMap = (id: string) => ({
   [SNOWFLAKE]: null,
 });
 
-const DataSourceDetails = ({ id, accountId, parentId, type, createdAt, config = {} }: DataSourceDetailsProps) => {
+const DataSourceDetails = ({
+  id,
+  accountId,
+  parentId,
+  type,
+  createdAt,
+  config = {},
+  isSynthetic = false,
+}: DataSourceDetailsProps) => {
   const Properties = propertiesMap[type];
   const renderHelp: ReactNode = renderHelpMap(id, config)[type];
-  const childrenList: ReactNode = childrenListMap(id)[type];
+  const childrenList: ReactNode = childrenListMap(id, isSynthetic)[type];
 
   return (
     <Stack spacing={SPACING_2}>

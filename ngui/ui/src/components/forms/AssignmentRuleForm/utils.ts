@@ -6,6 +6,7 @@ export const FIELD_NAMES = Object.freeze({
   OPERATOR: "operator",
   CONDITIONS_FIELD_ARRAY: Object.freeze({
     FIELD_NAME: "conditions",
+    ID: "id",
     META_INFO: "meta_info",
     TYPE: "type",
     TAG_KEY_FIELD_NAME: "meta_info_key",

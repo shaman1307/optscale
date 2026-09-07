@@ -42,6 +42,7 @@ import {
   GCP_CNR,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   KUBERNETES_CNR,
   GCP_TENANT,
 } from "utils/constants";
@@ -114,12 +115,8 @@ const CredentialInputs = ({ type, config }) => {
     case DATABRICKS:
       return <DatabricksCredentials readOnlyFields={[DATABRICKS_CREDENTIALS_FIELD_NAMES.ACCOUNT_ID]} />;
     case SNOWFLAKE:
-      return (
-        <SnowflakeCredentials
-          readOnlyFields={[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT]}
-          privateKeyRequired={false}
-        />
-      );
+    case SNOWFLAKE_TENANT:
+      return <SnowflakeCredentials readOnlyFields={[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT]} privateKeyRequired={false} />;
     case KUBERNETES_CNR:
       return <KubernetesCredentials />;
     case GCP_CNR:

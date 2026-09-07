@@ -5,6 +5,7 @@ import IconButton from "components/IconButton";
 import Tooltip from "components/Tooltip";
 import { isEmptyArray, sortObjects } from "utils/arrays";
 import { EXPENSES_FILTERBY_TYPES } from "utils/constants";
+import { isVirtualTagBreakdown } from "utils/virtualTagBreakdown";
 import { percentXofY } from "utils/math";
 
 const CLOUD = "cloud";
@@ -14,25 +15,35 @@ const REGION = "region";
 const OWNER = "owner";
 const RESOURCE_TYPE = "resourceType";
 
-const getTableWrapperCardTitleName = (filterBy) =>
-  ({
+const getTableWrapperCardTitleName = (filterBy) => {
+  if (isVirtualTagBreakdown(filterBy)) {
+    return "virtualTag";
+  }
+  return {
     [EXPENSES_FILTERBY_TYPES.POOL]: POOL,
     [EXPENSES_FILTERBY_TYPES.CLOUD]: CLOUD,
+    [EXPENSES_FILTERBY_TYPES.VENDOR]: "vendor",
     [EXPENSES_FILTERBY_TYPES.EMPLOYEE]: OWNER,
     [EXPENSES_FILTERBY_TYPES.SERVICE]: SERVICE,
     [EXPENSES_FILTERBY_TYPES.REGION]: REGION,
     [EXPENSES_FILTERBY_TYPES.RESOURCE_TYPE]: RESOURCE_TYPE,
-  })[filterBy];
+  }[filterBy];
+};
 
-const getTableEmptyMessageId = (filterBy) =>
-  ({
+const getTableEmptyMessageId = (filterBy) => {
+  if (isVirtualTagBreakdown(filterBy)) {
+    return "noVirtualTagExpenses";
+  }
+  return {
     [EXPENSES_FILTERBY_TYPES.POOL]: "noPoolExpenses",
     [EXPENSES_FILTERBY_TYPES.CLOUD]: "noDataSourceExpenses",
+    [EXPENSES_FILTERBY_TYPES.VENDOR]: "noVendorExpenses",
     [EXPENSES_FILTERBY_TYPES.SERVICE]: "noServiceExpenses",
     [EXPENSES_FILTERBY_TYPES.REGION]: "noRegionExpenses",
     [EXPENSES_FILTERBY_TYPES.EMPLOYEE]: "noOwnerExpenses",
     [EXPENSES_FILTERBY_TYPES.RESOURCE_TYPE]: "noResourceTypeExpenses",
-  })[filterBy];
+  }[filterBy];
+};
 
 const getExpensesTableData = ({ filteredBreakdown, totalExpenses, urlGetter, colorsMap }) =>
   sortObjects({ array: filteredBreakdown, field: "total" }).map((value) => ({

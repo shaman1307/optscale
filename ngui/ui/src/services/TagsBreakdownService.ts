@@ -5,6 +5,7 @@ import { GET_TAGS_BREAKDOWN } from "api/restapi/actionTypes";
 import { useApiData } from "hooks/useApiData";
 import { useApiState } from "hooks/useApiState";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
+import { isIncompleteBillingPeriod } from "utils/costPeriod";
 import { mapCleanExpensesFilterParamsToApiParams } from "./CleanExpensesService";
 
 const getParams = (filterParams) => ({
@@ -22,7 +23,7 @@ export const useGet = (params) => {
   });
 
   useEffect(() => {
-    if (shouldInvoke) {
+    if (shouldInvoke && !isIncompleteBillingPeriod(params)) {
       dispatch(getTagsBreakdown(organizationId, getParams(params)));
     }
   }, [dispatch, organizationId, params, shouldInvoke]);

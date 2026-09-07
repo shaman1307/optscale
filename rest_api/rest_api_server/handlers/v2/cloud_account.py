@@ -60,7 +60,7 @@ class CloudAccountAsyncCollectionHandler(BaseAsyncCollectionHandler,
                         type: string
                         enum: [aws_cnr, azure_cnr, kubernetes_cnr, alibaba_cnr,
                                azure_tenant, gcp_cnr, nebius, databricks,
-                               gcp_tenant, snowflake]
+                               gcp_tenant, snowflake, snowflake_tenant]
                         description: Cloud account type
                         example: aws_cnr
                     config:
@@ -202,7 +202,7 @@ class CloudAccountAsyncCollectionHandler(BaseAsyncCollectionHandler,
                                         ('aws_cnr','azure_cnr', 'kubernetes_cnr',
                                          'azure_tenant', 'alibaba_cnr', 'gcp_cnr',
                                          'nebius', 'databricks', 'gcp_tenant',
-                                         'snowflake')"}
+                                         'snowflake', 'snowflake_tenant')"}
                                     config:
                                         type: object
                                         description: |
@@ -359,7 +359,7 @@ class CloudAccountAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
                             ('aws_cnr','azure_cnr', 'alibaba_cnr',
                              'azure_tenant', 'kubernetes_cnr', 'gcp_cnr',
                              'nebius', 'databricks', 'gcp_tenant',
-                             'snowflake')"}
+                             'snowflake', 'snowflake_tenant')"}
                         config: {type: object,
                             description:
                             "Object with credentials to access cloud"}
@@ -492,16 +492,21 @@ class CloudAccountAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
                 except WrongArgumentsException as exc:
                     raise OptHTTPError.from_opt_exception(400, exc)
                 if not secret:
-                    # dates should be less than a year ago and not a date in
-                    # the current month if updated by a token
-                    now = datetime.now(tz=timezone.utc)
-                    min_date = int(
-                        now.replace(year=now.year - 1).timestamp())
-                    max_date = int(now.replace(
-                        day=1, hour=0, minute=0, second=0,
-                        microsecond=0).timestamp()) - 1
-                    if value < min_date or value > max_date:
-                        raise OptHTTPError(400, Err.OE0559, [param])
+                    # Historical billing reimport (cursor moved into the past)
+                    # must land between one year ago and the end of last month.
+                    # Retry/reschedule keeps the same (or newer) cursor and must
+                    # not be rejected by that window — otherwise Retry fails for
+                    # any account whose last_import_at is in the current month.
+                    current = getattr(cloud_acc, param, None) or 0
+                    if value < current:
+                        now = datetime.now(tz=timezone.utc)
+                        min_date = int(
+                            now.replace(year=now.year - 1).timestamp())
+                        max_date = int(now.replace(
+                            day=1, hour=0, minute=0, second=0,
+                            microsecond=0).timestamp()) - 1
+                        if value < min_date or value > max_date:
+                            raise OptHTTPError(400, Err.OE0559, [param])
 
     async def patch(self, id, **kwargs):
         """

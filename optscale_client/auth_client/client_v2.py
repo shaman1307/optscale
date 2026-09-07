@@ -172,11 +172,15 @@ class Client(Client_v1):
     def signin_url(self):
         return 'signin'
 
-    def signin(self, provider, token):
+    def signin(self, provider, token, tenant_id=None, redirect_uri=None):
         body = {
             "provider": provider,
             "token": token,
         }
+        if tenant_id is not None:
+            body['tenant_id'] = tenant_id
+        if redirect_uri is not None:
+            body['redirect_uri'] = redirect_uri
         return self.post(self.signin_url(), body)
 
     def verification_code_create(self, email, code):

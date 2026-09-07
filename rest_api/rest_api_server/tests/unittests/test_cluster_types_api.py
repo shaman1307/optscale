@@ -55,6 +55,9 @@ class TestClusterTypesApi(TestApiBase):
               'CloudAccountController._configure_report').start()
         _, self.cloud_acc = self.create_cloud_account(
             self.org_id, cloud_acc, auth_user_id=self.auth_user_id)
+        _, cloud_rules = self.client.rules_list(self.org_id)
+        self.cloud_acc_pool_id = cloud_rules['rules'][0]['pool_id']
+        self.set_allowed_pair(self.auth_user_id, self.cloud_acc_pool_id)
 
     def test_cluster_type_create(self):
         code, res = self.client.cluster_type_create(
@@ -741,10 +744,71 @@ class TestClusterTypesApi(TestApiBase):
         clustered_resources = list(self.resources_collection.find(
             {'cluster_id': {'$exists': True}}))
         self.assertEqual(len(clustered_resources), 1)
+        cluster = self.resources_collection.find_one(
+            {'_id': clustered_resources[0]['cluster_id']})
+        self.assertEqual(cluster.get('pool_id'), self.cloud_acc_pool_id)
         self.assertEqual(clustered_resources[0].get('pool_id'),
-                         self.org['pool_id'])
+                         self.cloud_acc_pool_id)
         self.assertEqual(clustered_resources[0].get('employee_id'),
                          self.employee['id'])
+
+    def test_cluster_types_apply_reassigns_existing_members_off_org_pool(self):
+        code, cluster_type = self.client.cluster_type_create(
+            self.org_id, self.valid_cluster_type)
+        self.assertEqual(code, 201)
+        code, resource = self.create_cloud_resource(
+            self.cloud_acc['id'], tags={'type': 'val'}, region='us-east')
+        self.assertEqual(code, 201)
+        self.assertIsNotNone(resource.get('cluster_id'))
+        self.resources_collection.update_one(
+            {'_id': resource['id']},
+            {'$set': {
+                'pool_id': self.org['pool_id'],
+                'applied_rules': [],
+            }})
+        code, _ = self.client.cluster_types_apply(self.org_id)
+        self.assertEqual(code, 201)
+        member = self.resources_collection.find_one({'_id': resource['id']})
+        parent = self.resources_collection.find_one(
+            {'_id': resource['cluster_id']})
+        self.assertEqual(parent.get('pool_id'), self.cloud_acc_pool_id)
+        self.assertEqual(member.get('pool_id'), self.cloud_acc_pool_id)
+        self.assertNotEqual(member.get('pool_id'), self.org['pool_id'])
+
+    def test_cluster_gets_data_source_pool_and_cloud_is_virtual_tag(self):
+        _, vt = self.client.virtual_tag_create(self.org_id, {
+            'key': 'PRODUCT',
+            'name': 'Product',
+            'mode': 'assignment',
+        })
+        code, rule = self.client.virtual_tag_rule_create(self.org_id, {
+            'virtual_tag_id': vt['id'],
+            'name': 'PRODUCT by data source',
+            'branches': [{
+                'conditions': [{
+                    'type': 'cloud_is',
+                    'meta_info': self.cloud_acc['id'],
+                }],
+                'allocations': [{'value': 'Dataproc', 'share': 100}],
+            }],
+        })
+        self.assertEqual(code, 201, rule)
+        code, cluster_type = self.client.cluster_type_create(
+            self.org_id, self.valid_cluster_type)
+        self.assertEqual(code, 201)
+        code, resource = self.create_cloud_resource(
+            self.cloud_acc['id'], tags={'type': 'val'}, region='us-east')
+        self.assertEqual(code, 201)
+        self.assertIsNotNone(resource.get('cluster_id'))
+        cluster = self.resources_collection.find_one(
+            {'_id': resource['cluster_id']})
+        self.assertEqual(cluster.get('cloud_account_id'), self.cloud_acc['id'])
+        self.assertEqual(cluster.get('pool_id'), self.cloud_acc_pool_id)
+        self.assertEqual(resource.get('pool_id'), self.cloud_acc_pool_id)
+        allocations = cluster.get('virtual_tags') or []
+        self.assertTrue(any(
+            alloc.get('key') == 'PRODUCT' and alloc.get('value') == 'Dataproc'
+            for alloc in allocations), allocations)
 
     def test_cluster_types_apply_assignment_request_invalidation(self):
         code, resource = self.create_cloud_resource(

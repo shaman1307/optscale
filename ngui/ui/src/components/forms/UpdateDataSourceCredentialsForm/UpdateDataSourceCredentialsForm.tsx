@@ -45,6 +45,7 @@ import {
   GCP_CNR,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   KUBERNETES_CNR,
   AWS_ROOT_CONNECT_CUR_VERSION,
   GCP_TENANT,
@@ -192,6 +193,7 @@ const Description = ({ type, config }) => {
         </Typography>
       );
     case SNOWFLAKE:
+    case SNOWFLAKE_TENANT:
       return (
         <Typography gutterBottom>
           <FormattedMessage id="createSnowflakeDocumentationReference" />
@@ -260,6 +262,7 @@ const UpdateCredentialsWarning = ({ type }) => {
     case NEBIUS:
       return renderUpdateWarning();
     case SNOWFLAKE:
+    case SNOWFLAKE_TENANT:
       return renderUpdateWarning();
     default:
       return null;
@@ -443,18 +446,21 @@ const getConfig = (type, config) => {
         }),
       };
     case SNOWFLAKE:
+    case SNOWFLAKE_TENANT:
       return {
         getDefaultFormValues: () => ({
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT]: config.account,
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER]: config.user,
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY]: "",
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE]: config.warehouse,
+          [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BACKUP_WAREHOUSE]: config.backup_warehouse || "",
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE]: config.role || "ACCOUNTADMIN",
           [SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE]:
-            config.billing_source || "account_usage",
+            config.billing_source || (type === SNOWFLAKE_TENANT ? "organization_usage" : "account_usage"),
         }),
         parseFormDataToApiParams: (formData) => {
           const privateKey = formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY]?.trim();
+          const backupWarehouse = formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BACKUP_WAREHOUSE]?.trim();
 
           return {
             config: {
@@ -462,9 +468,11 @@ const getConfig = (type, config) => {
               user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
               ...(privateKey ? { private_key: privateKey } : {}),
               warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
+              ...(backupWarehouse ? { backup_warehouse: backupWarehouse } : { backup_warehouse: "" }),
               role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
               billing_source:
-                formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE] || "account_usage",
+                formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE] ||
+                (type === SNOWFLAKE_TENANT ? "organization_usage" : "account_usage"),
             },
           };
         },
@@ -492,6 +500,7 @@ const getConfig = (type, config) => {
           return {
             [GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_DATASET]: config.billing_data.dataset_name,
             [GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_TABLE]: config.billing_data.table_name,
+            [GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE]: config.billing_data.resource_table_name,
             [GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_PROJECT_ID]: config.billing_data.project_id,
             [GCP_CREDENTIALS_FIELD_NAMES.AUTOMATICALLY_DETECT_PRICING_DATA]: !hasPricingData,
             ...(hasPricingData
@@ -515,6 +524,7 @@ const getConfig = (type, config) => {
               billing_data: {
                 dataset_name: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_DATASET],
                 table_name: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_TABLE],
+                resource_table_name: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE] || undefined,
                 project_id: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_PROJECT_ID] || undefined,
               },
               ...(formData[GCP_CREDENTIALS_FIELD_NAMES.AUTOMATICALLY_DETECT_PRICING_DATA]
@@ -538,6 +548,7 @@ const getConfig = (type, config) => {
           return {
             [GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_DATASET]: config.billing_data.dataset_name,
             [GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_TABLE]: config.billing_data.table_name,
+            [GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE]: config.billing_data.resource_table_name,
             [GCP_TENANT_CREDENTIALS_FIELD_NAMES.AUTOMATICALLY_DETECT_PRICING_DATA]: !hasPricingData,
             ...(hasPricingData
               ? {
@@ -559,6 +570,7 @@ const getConfig = (type, config) => {
               billing_data: {
                 dataset_name: formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_DATASET],
                 table_name: formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_TABLE],
+                resource_table_name: formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE] || undefined,
               },
               ...(formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.AUTOMATICALLY_DETECT_PRICING_DATA]
                 ? {}

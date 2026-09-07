@@ -17,7 +17,8 @@ class AzureTenant(Azure):
                        protected=True),
 
         # Service parameters
-        CloudParameter(name='skipped_subscriptions', type=dict, required=False)
+        CloudParameter(name='skipped_subscriptions', type=dict, required=False),
+        CloudParameter(name='last_children_sync_at', type=int, required=False),
     ]
 
     def discovery_calls_map(self):

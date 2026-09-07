@@ -19,6 +19,8 @@ from rest_api.rest_api_server.controllers.employee import EmployeeController
 from rest_api.rest_api_server.controllers.expense import ExpenseController
 from rest_api.rest_api_server.controllers.pool_alert import PoolAlertController
 from rest_api.rest_api_server.controllers.rule_apply import RuleApplyController
+from rest_api.rest_api_server.controllers.virtual_tag_apply import (
+    VirtualTagApplyController)
 from rest_api.rest_api_server.controllers.calendar_synchronization import (
     CalendarSynchronizationController)
 from rest_api.rest_api_server.exceptions import Err
@@ -30,7 +32,8 @@ from rest_api.rest_api_server.utils import (
     check_string_attribute, check_int_attribute, check_dict_attribute,
     encoded_tags, encoded_map, retry_mongo_upsert, update_tags,
     generate_discovered_cluster_resources_stat, check_bool_attribute,
-    timestamp_to_day_start)
+    timestamp_to_day_start, import_quarters_from_payload)
+from tools.cloud_adapter.gcp_resource_collapse import collapse_gcp_resources
 from tools.cloud_adapter.model import RES_MODEL_MAP, ResourceTypes
 
 LOG = logging.getLogger(__name__)
@@ -243,6 +246,8 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
     def list(self, include_deleted=False, include_subresources=True, **kwargs):
         match_filter = []
         cloud_account_id = kwargs.get('cloud_account_id')
+        listed_by_ca = cloud_account_id is not None
+        listed_by_org = kwargs.get('organization_id') is not None
         check_ca = kwargs.pop('check_cloud_account', False)
         if check_ca and cloud_account_id:
             self._check_cloud_account_exists(cloud_account_id)
@@ -274,6 +279,11 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
             pipeline[0]['$match']['$and'].append({'deleted_at': 0})
         if not include_subresources:
             pipeline[0]['$match']['$and'].append({'cluster_id': {'$exists': False}})
+        # Cluster parents now store cloud_account_id for the UI data source
+        # column, but they are not cloud-account inventory.
+        if listed_by_ca and not listed_by_org:
+            pipeline[0]['$match']['$and'].append(
+                {'cluster_type_id': {'$exists': False}})
         result = list(self.resources_collection.aggregate(pipeline))
         for r in result:
             self.format_resource(r)
@@ -554,19 +564,40 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
             id_ = r.get(CLOUD_RESOURCE_ID_FIELD)
             hash_ = r.get(CLOUD_RESOURCE_HASH_FIELD)
             if id_ and hash_:
-                resources_map[id_] = (
-                    r, CLOUD_RESOURCE_ID_FIELD) if unique_field_name else r
+                self._put_resource_map_entry(
+                    resources_map, id_, r, unique_field_name,
+                    CLOUD_RESOURCE_ID_FIELD)
                 if not unique:
-                    resources_map[hash_] = (
-                        r,
-                        CLOUD_RESOURCE_HASH_FIELD) if unique_field_name else r
+                    self._put_resource_map_entry(
+                        resources_map, hash_, r, unique_field_name,
+                        CLOUD_RESOURCE_HASH_FIELD)
             elif id_:
-                resources_map[id_] = (
-                    r, CLOUD_RESOURCE_ID_FIELD) if unique_field_name else r
+                self._put_resource_map_entry(
+                    resources_map, id_, r, unique_field_name,
+                    CLOUD_RESOURCE_ID_FIELD)
             elif hash_:
-                resources_map[hash_] = (
-                    r, CLOUD_RESOURCE_HASH_FIELD) if unique_field_name else r
+                self._put_resource_map_entry(
+                    resources_map, hash_, r, unique_field_name,
+                    CLOUD_RESOURCE_HASH_FIELD)
         return resources_map
+
+    @staticmethod
+    def _put_resource_map_entry(resources_map, key, resource,
+                                unique_field_name, field_name):
+        """Prefer a live doc when skip_existing also matches a deleted twin.
+
+        include_deleted is True for report import. Last-write-wins then
+        returns the soft-deleted Mongo _id, and save_clean writes ClickHouse
+        to the dead twin while extras stay on the live keeper.
+        """
+        existing = resources_map.get(key)
+        if existing is not None:
+            existing_doc = existing[0] if unique_field_name else existing
+            if ((existing_doc.get('deleted_at') or 0) == 0 and
+                    (resource.get('deleted_at') or 0) != 0):
+                return
+        resources_map[key] = (
+            (resource, field_name) if unique_field_name else resource)
 
     def get_resources_by_hash_or_id(self, cloud_account_id, resources,
                                     include_deleted=True, unique=False,
@@ -737,6 +768,10 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
             changed.update({'tags': resource_tags})
         else:
             unchanged.update({'tags': resource_tags})
+        if is_report_import and behavior == 'skip_existing':
+            for field in ('virtual_tags_by_quarter', 'virtual_tags'):
+                if field in resource:
+                    changed[field] = resource.pop(field)
         return changed, unchanged
 
     @staticmethod
@@ -793,13 +828,22 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
     def _save_bulk(
             self, cloud_account_id, resources, behavior,
             include_deleted, is_report_import, new_environment,
-            cloud_account_map, employee_allowed_pools):
+            cloud_account_map, employee_allowed_pools, invoice_month=None):
         if not resources:
             return [], {}, {}, {}
         rac = RuleApplyController(self.session, self._config, self.token)
         cloud_account = cloud_account_map[cloud_account_id]
         rules = rac.get_valid_rules(cloud_account.organization_id,
                                     employee_allowed_pools)
+        vt_apply = VirtualTagApplyController(
+            self.session, self._config, self.token)
+        vt_defs_by_quarter = {}
+
+        def defs_for(quarter):
+            if quarter not in vt_defs_by_quarter:
+                vt_defs_by_quarter[quarter] = vt_apply.load_org_virtual_tags(
+                    cloud_account.organization_id, quarter=quarter)
+            return vt_defs_by_quarter[quarter]
         db_resources_map = self.get_resources_by_hash_or_id(
             cloud_account_id, resources, include_deleted,
             unique=False, unique_field_name=False)
@@ -808,6 +852,9 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
         unique_resources_map = self.get_resources_by_hash_or_id(
             cloud_account_id, resources, include_deleted, unique=True,
             unique_field_name=True)
+        for resource in resources:
+            if not resource.get('cloud_account_id'):
+                resource['cloud_account_id'] = cloud_account_id
         ctc = ClusterTypeController(self.session, self._config, self.token)
         resource_cluster_map = ctc.bind_clusters(
             cloud_account.organization_id, resources, unique_resources_map,
@@ -815,6 +862,7 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
 
         updates_bulk = []
         insertions_bulk = []
+        existing_ids_bulk = []
         resource_events = {}
         # will save new inserted resource ids for error rollback,
         # not to remove existing resources on bulk_write error
@@ -822,6 +870,10 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
         for resource in resources:
             if not resource.get('cloud_account_id'):
                 resource['cloud_account_id'] = cloud_account_id
+            import_quarters = import_quarters_from_payload(
+                resource, invoice_month=invoice_month)
+            resource.pop('invoice_months', None)
+            resource.pop('invoice_month', None)
             self.check_restrictions(**resource)
             resource = self.extend_payload(resource, now)
             resource_id_value = (resource.get(CLOUD_RESOURCE_ID_FIELD) or
@@ -829,15 +881,25 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
             cluster = resource_cluster_map.get(resource_id_value)
             if cluster:
                 resource['cluster_id'] = cluster['_id']
-                # use cluster assignment or clear direct
-                resource['pool_id'] = cluster.get('pool_id')
-                resource['employee_id'] = cluster.get('employee_id')
-                resource['applied_rules'] = cluster.get('applied_rules', [])
-            else:
-                resource, events = rac.handle_assignment_data(
-                    cloud_account.organization_id, resource, cloud_account,
-                    employee_allowed_pools, rules)
+            resource, events = rac.handle_assignment_data(
+                cloud_account.organization_id, resource, cloud_account,
+                employee_allowed_pools, rules)
+            if not cluster:
                 resource_events[resource['_id']] = events
+            db_preview = db_resources_map.get(
+                resource.get(CLOUD_RESOURCE_HASH_FIELD), {}) or db_resources_map.get(
+                resource.get(CLOUD_RESOURCE_ID_FIELD), {})
+            if db_preview:
+                resource['virtual_tags_by_quarter'] = dict(
+                    db_preview.get('virtual_tags_by_quarter') or {})
+                if 'virtual_tags' in db_preview:
+                    resource['virtual_tags'] = db_preview.get(
+                        'virtual_tags') or []
+            for quarter in import_quarters:
+                vt_apply.apply_to_resource(
+                    resource, virtual_tags=defs_for(quarter),
+                    organization_id=cloud_account.organization_id,
+                    quarter=quarter)
 
             tags = encoded_tags(resource.get('tags'))
             if tags:
@@ -861,6 +923,10 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
                 resource, db_resource, behavior, is_report_import)
             updates_bulk.append(update)
             insertions_bulk.append(insertion)
+            existing_ids_bulk.append(
+                db_resource.get('_id')
+                if db_resource and (db_resource.get('deleted_at') or 0) == 0
+                else None)
 
         updated_ids = []
         if behavior in {'skip_existing', 'update_existing'}:
@@ -873,7 +939,8 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
                 '_first_seen_date': '$min',
                 '_last_seen_date': '$max'
             }
-            for update, insertion in zip(updates_bulk, insertions_bulk):
+            for update, insertion, existing_id in zip(
+                    updates_bulk, insertions_bulk, existing_ids_bulk):
                 op_details = defaultdict(dict)
                 for field, op in field_op_map.items():
                     val = update.pop(field, None)
@@ -883,11 +950,17 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
                                   '$setOnInsert': insertion}.items():
                     if data:
                         op_details[cmd] = {k: v for k, v in data.items()}
-                update_operations.append(UpdateOne(
-                    filter={
+                if existing_id:
+                    filt = {'_id': existing_id}
+                else:
+                    filt = {
                         k: insertion[k] for k in filter_fields
                         if insertion.get(k)
-                    },
+                    }
+                    if behavior == 'skip_existing':
+                        filt['deleted_at'] = 0
+                update_operations.append(UpdateOne(
+                    filter=filt,
                     update=op_details,
                     upsert=True,
                 ))
@@ -929,9 +1002,11 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
                 resource_cluster_map)
 
     def save_bulk(self, cloud_account_id, resources, behavior, return_resources,
-                  is_report_import=False, new_environment=False):
+                  is_report_import=False, new_environment=False,
+                  invoice_month=None):
         self.check_env_properties(resources, new_environment, behavior)
         resources = self.gen_cloud_resource_ids(resources)
+        resources = collapse_gcp_resources(resources)
         include_deleted = False if behavior == 'error_existing' else True
         rac = RuleApplyController(self.session, self._config, self.token)
         cloud_account_map, employee_allowed_pools = rac.collect_relations(
@@ -946,7 +1021,7 @@ class CloudResourceController(BaseController, MongoMixin, ResourceFormatMixin):
         results = self._save_bulk(
             cloud_account_id, resources, behavior, include_deleted,
             is_report_import, new_environment, cloud_account_map,
-            employee_allowed_pools)
+            employee_allowed_pools, invoice_month=invoice_month)
 
         inserted_ids, new_resources, r_events, resource_cluster_map = results
 

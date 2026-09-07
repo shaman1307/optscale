@@ -1,12 +1,13 @@
 import calendar
+import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterator
-import json
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
@@ -21,9 +22,14 @@ from tools.cloud_adapter.utils import CloudParameter
 
 LOG = logging.getLogger(__name__)
 DEFAULT_CURRENCY = 'USD'
-DEFAULT_CREDIT_PRICE = 0.0
-DEFAULT_STORAGE_PRICE_PER_TB_MONTH = 23.0
-DEFAULT_TRANSFER_PRICE_PER_TB = 0.0
+# Key-pair JWTs are valid ~60s. Under load the token can expire before
+# Snowflake accepts the login (JWT_TOKEN_INVALID_EXPIRATION_TIME).
+CONNECT_JWT_RETRY_ATTEMPTS = 3
+CONNECT_JWT_RETRY_SLEEP_SECS = 2
+
+
+class WarehouseFailoverNeeded(Exception):
+    """Primary warehouse blocked; adapter switched to backup_warehouse."""
 RECONCILE_THRESHOLD = 0.05
 # Exclude recent days from reconcile; ACCOUNT_USAGE daily rows lag.
 RECONCILE_LAG_DAYS = 2
@@ -80,6 +86,15 @@ def load_sql(name: str, billing_source: str = BILLING_SOURCE_ACCOUNT_USAGE) -> s
         'Snowflake SQL file not found: %s (also tried %s)' % (path, shared))
 
 
+def _row_region(record) -> str | None:
+    """Prefer usage-row region / snowflake_region when present."""
+    for key in ('region', 'snowflake_region'):
+        value = record.get(key)
+        if value is not None and str(value).strip() != '':
+            return str(value)
+    return None
+
+
 def _row_locator(record, fallback: str) -> str:
     """Prefer per-row account_locator (org multi-account) over session account."""
     return str(record.get('account_locator') or fallback)
@@ -125,34 +140,65 @@ def enrich_account_name(
         record['account_name'] = name
 
 
-def calculate_cost(record, cost_model):
-    # Marketplace / prepaid monetary charges already in currency.
+def _sql_window(start_ts, end_ts, as_date=False):
+    """Named bind params for rate-joined SQL (%(start)s / %(end)s)."""
+    if as_date:
+        start = start_ts.date() if hasattr(start_ts, 'date') else start_ts
+        end = end_ts.date() if hasattr(end_ts, 'date') else end_ts
+    else:
+        start, end = start_ts, end_ts
+    return {'start': start, 'end': end}
+
+
+def _float_or_none(value):
+    if value is None:
+        return None
+    return float(value)
+
+
+def _rate_fields(record):
+    """Copy RATE_SHEET_DAILY columns from a SQL row onto a collector record."""
+    out = {}
+    if 'effective_rate' in record:
+        out['effective_rate'] = _float_or_none(record.get('effective_rate'))
+    if 'cloud_services_effective_rate' in record:
+        out['cloud_services_effective_rate'] = _float_or_none(
+            record.get('cloud_services_effective_rate'))
+    currency = record.get('currency')
+    if currency:
+        out['currency'] = currency
+    return out
+
+
+def calculate_cost(record, cost_model=None):
+    # Marketplace / prepaid / adjustments already in currency.
     if record.get('billable_amount') is not None:
         return float(record['billable_amount'] or 0)
+    # Warehouse / reader: split compute vs cloud services rates.
+    if 'cloud_services_effective_rate' in record:
+        compute = float(record.get('credits_used_compute') or 0)
+        cloud = float(record.get('credits_used_cloud_services') or 0)
+        wh_rate = float(record.get('effective_rate') or 0)
+        cs_rate = float(record.get('cloud_services_effective_rate') or 0)
+        return compute * wh_rate + cloud * cs_rate
     if record.get('credits_used') is not None:
-        price = (
-            cost_model.get('cortex_model_overrides', {}).get(
-                record.get('model_name'))
-            or cost_model.get('service_type_overrides', {}).get(
-                record.get('service_type'))
-            or cost_model.get('credit_price', DEFAULT_CREDIT_PRICE)
-        )
-        return float(record['credits_used']) * float(price)
+        rate = record.get('effective_rate')
+        if rate is None:
+            return 0.0
+        return float(record['credits_used']) * float(rate)
     if record.get('average_bytes') is not None:
+        rate = record.get('effective_rate')
+        if rate is None:
+            return 0.0
         tb = float(record['average_bytes']) / (1024 ** 4)
         start_date = record.get('start_date') or datetime.now(timezone.utc)
         if hasattr(start_date, 'date'):
             start_date = start_date.date()
         days_in_month = calendar.monthrange(
             start_date.year, start_date.month)[1]
-        daily_rate = float(cost_model.get(
-            'storage_price_per_tb_month',
-            DEFAULT_STORAGE_PRICE_PER_TB_MONTH)) / float(days_in_month)
-        return tb * daily_rate
+        return tb * float(rate) / float(days_in_month)
     if record.get('bytes_transferred') is not None:
-        tb = float(record['bytes_transferred']) / (1024 ** 4)
-        return tb * float(cost_model.get(
-            'transfer_price_per_tb', DEFAULT_TRANSFER_PRICE_PER_TB) or 0)
+        return 0.0
     return 0.0
 
 
@@ -321,7 +367,8 @@ class WarehouseMeteringCollector(SnowflakeUsageCollector):
     SOURCE = 'WAREHOUSE_METERING'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('start_time'))
             end = _to_utc(record.get('end_time')) or start
             warehouse_id = record.get('warehouse_id')
@@ -333,6 +380,7 @@ class WarehouseMeteringCollector(SnowflakeUsageCollector):
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': f"{loc}/warehouse/{warehouse_id}",
                 'resource_name': record.get('warehouse_name'),
                 'warehouse_id': warehouse_id,
@@ -341,6 +389,7 @@ class WarehouseMeteringCollector(SnowflakeUsageCollector):
                     record.get('credits_used_compute') or 0),
                 'credits_used_cloud_services': float(
                     record.get('credits_used_cloud_services') or 0),
+                **_rate_fields(record),
             }
 
 
@@ -352,7 +401,7 @@ class DatabaseStorageCollector(SnowflakeUsageCollector):
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
         for record in self._execute(
-                cursor, (start_ts.date(), end_ts.date())):
+                cursor, _sql_window(start_ts, end_ts, as_date=True)):
             usage_date = record.get('usage_date')
             if hasattr(usage_date, 'year'):
                 start = datetime(
@@ -371,10 +420,12 @@ class DatabaseStorageCollector(SnowflakeUsageCollector):
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': f"{loc}/database/{database_id}",
                 'resource_name': record.get('database_name'),
                 'database_id': database_id,
                 'average_bytes': avg_db + avg_fs,
+                **_rate_fields(record),
             }
 
 
@@ -386,7 +437,7 @@ class StageStorageCollector(SnowflakeUsageCollector):
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
         for record in self._execute(
-                cursor, (start_ts.date(), end_ts.date())):
+                cursor, _sql_window(start_ts, end_ts, as_date=True)):
             usage_date = record.get('usage_date')
             if hasattr(usage_date, 'year'):
                 start = datetime(
@@ -403,9 +454,11 @@ class StageStorageCollector(SnowflakeUsageCollector):
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': f"{loc}/STAGE",
                 'resource_name': 'STAGE',
                 'average_bytes': int(record.get('average_stage_bytes') or 0),
+                **_rate_fields(record),
             }
 
 
@@ -418,7 +471,7 @@ class PipeUsageCollector(SnowflakeUsageCollector):
     def fetch(self, cursor, start_ts, end_ts, account_locator):
         # ORGANIZATION_USAGE is daily (USAGE_DATE); ACCOUNT_USAGE is event-level.
         if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
-            params = (start_ts.date(), end_ts.date())
+            params = _sql_window(start_ts, end_ts, as_date=True)
         else:
             params = (start_ts, end_ts)
         for record in self._execute(cursor, params):
@@ -440,13 +493,14 @@ class PipeUsageCollector(SnowflakeUsageCollector):
             else:
                 resource_id = f"{loc}/snowpipe/{pipe_id}"
                 resource_name = str(pipe_id)
-            yield {
+            out = {
                 'start_date': start,
                 'end_date': end,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': resource_id,
                 'resource_name': resource_name,
                 'pipe_id': pipe_id,
@@ -455,6 +509,8 @@ class PipeUsageCollector(SnowflakeUsageCollector):
                 'credits_used': float(record.get('credits_used') or 0),
                 'bytes_inserted': float(record.get('bytes_inserted') or 0),
             }
+            out.update(_rate_fields(record))
+            yield out
 
 
 class AutomaticClusteringCollector(SnowflakeUsageCollector):
@@ -467,7 +523,7 @@ class AutomaticClusteringCollector(SnowflakeUsageCollector):
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
         if self.billing_source == BILLING_SOURCE_ORGANIZATION_USAGE:
-            params = (start_ts.date(), end_ts.date())
+            params = _sql_window(start_ts, end_ts, as_date=True)
         else:
             params = (start_ts, end_ts)
         for record in self._execute(cursor, params):
@@ -477,13 +533,14 @@ class AutomaticClusteringCollector(SnowflakeUsageCollector):
             database_name = record.get('database_name')
             table_name = record.get('table_name')
             loc = _row_locator(record, account_locator)
-            yield {
+            out = {
                 'start_date': start,
                 'end_date': end,
                 'service_category': self.SERVICE_CATEGORY,
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': (
                     f"{loc}/automatic_clustering/{table_id}"),
                 'resource_name': (
@@ -501,6 +558,8 @@ class AutomaticClusteringCollector(SnowflakeUsageCollector):
                 'num_rows_reclustered': float(
                     record.get('num_rows_reclustered') or 0),
             }
+            out.update(_rate_fields(record))
+            yield out
 
 
 class MeteringDailyCollector(SnowflakeUsageCollector):
@@ -510,7 +569,7 @@ class MeteringDailyCollector(SnowflakeUsageCollector):
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
         for record in self._execute(
-                cursor, (start_ts.date(), end_ts.date())):
+                cursor, _sql_window(start_ts, end_ts, as_date=True)):
             usage_date = record.get('usage_date')
             if hasattr(usage_date, 'year'):
                 start = datetime(
@@ -527,6 +586,7 @@ class MeteringDailyCollector(SnowflakeUsageCollector):
                 'service_type': service_type,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': f"{loc}/metering/{service_type}",
                 'resource_name': service_type,
                 'credits_used': float(record.get('credits_billed') or 0),
@@ -534,6 +594,7 @@ class MeteringDailyCollector(SnowflakeUsageCollector):
                     record.get('credits_used_compute') or 0),
                 'credits_used_cloud_services': float(
                     record.get('credits_used_cloud_services') or 0),
+                **_rate_fields(record),
             }
 
 
@@ -544,7 +605,8 @@ class CortexAiFunctionsCollector(SnowflakeUsageCollector):
     SOURCE = 'AI_FUNCTIONS'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             if record.get('is_completed') is False:
                 continue
             start = _to_utc(record.get('start_time'))
@@ -581,6 +643,7 @@ class CortexAiFunctionsCollector(SnowflakeUsageCollector):
                 'is_completed': bool(record.get('is_completed')),
                 'metrics': metrics,
                 **metrics,
+                **_rate_fields(record),
             }
 
 
@@ -591,7 +654,8 @@ class CortexAgentCollector(SnowflakeUsageCollector):
     SOURCE = 'CORTEX_AGENTS'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('start_time'))
             end = _to_utc(record.get('end_time')) or start
             agent_id = record.get('agent_id')
@@ -635,6 +699,7 @@ class CortexAgentCollector(SnowflakeUsageCollector):
                 'tokens_granular': record.get('tokens_granular'),
                 'credits_granular': record.get('credits_granular'),
                 'metadata': record.get('metadata'),
+                **_rate_fields(record),
             }
 
 
@@ -645,7 +710,8 @@ class CortexCodeCliCollector(SnowflakeUsageCollector):
     SOURCE = 'CORTEX_CODE_CLI'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('usage_time'))
             resource_id, resource_name = _cortex_code_resource(
                 account_locator, 'cli', record)
@@ -666,6 +732,7 @@ class CortexCodeCliCollector(SnowflakeUsageCollector):
                 'tokens_granular': record.get('tokens_granular'),
                 'credits_granular': record.get('credits_granular'),
                 'metadata': record.get('metadata'),
+                **_rate_fields(record),
             }
 
 
@@ -676,7 +743,8 @@ class CortexCodeSnowsightCollector(SnowflakeUsageCollector):
     SOURCE = 'CORTEX_CODE_SNOWSIGHT'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('usage_time'))
             resource_id, resource_name = _cortex_code_resource(
                 account_locator, 'snowsight', record)
@@ -697,6 +765,7 @@ class CortexCodeSnowsightCollector(SnowflakeUsageCollector):
                 'tokens_granular': record.get('tokens_granular'),
                 'credits_granular': record.get('credits_granular'),
                 'metadata': record.get('metadata'),
+                **_rate_fields(record),
             }
 
 
@@ -707,7 +776,8 @@ class CortexCodeDesktopCollector(SnowflakeUsageCollector):
     SOURCE = 'CORTEX_CODE_DESKTOP'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('usage_time'))
             resource_id, resource_name = _cortex_code_resource(
                 account_locator, 'desktop', record)
@@ -728,6 +798,7 @@ class CortexCodeDesktopCollector(SnowflakeUsageCollector):
                 'tokens_granular': record.get('tokens_granular'),
                 'credits_granular': record.get('credits_granular'),
                 'metadata': record.get('metadata'),
+                **_rate_fields(record),
             }
 
 
@@ -738,7 +809,8 @@ class SnowflakeIntelligenceCollector(SnowflakeUsageCollector):
     SOURCE = 'SNOWFLAKE_INTELLIGENCE'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('start_time'))
             end = _to_utc(record.get('end_time')) or start
             intel_id = record.get('snowflake_intelligence_id')
@@ -772,6 +844,7 @@ class SnowflakeIntelligenceCollector(SnowflakeUsageCollector):
                 'tokens_granular': record.get('tokens_granular'),
                 'credits_granular': record.get('credits_granular'),
                 'metadata': record.get('metadata'),
+                **_rate_fields(record),
             }
 
 
@@ -800,12 +873,14 @@ class DataTransferCollector(SnowflakeUsageCollector):
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
+                # Keep regions + transfer_type + day in resource_id so
+                # renaming to transfer_type alone does not collapse rows.
                 'resource_id': (
                     f"{loc}/data_transfer/"
                     f"{source_region}/{target_region}/{transfer_type}/"
                     f"{int(start.timestamp()) if start else 0}"),
-                'resource_name': (
-                    f"{transfer_type}:{source_region}->{target_region}"),
+                'resource_name': transfer_type,
                 'source_region': source_region,
                 'target_region': target_region,
                 'transfer_type': transfer_type,
@@ -853,7 +928,8 @@ class ReaderWarehouseMeteringCollector(SnowflakeUsageCollector):
     SERVICE_TYPE = 'READER_ACCOUNT'
 
     def fetch(self, cursor, start_ts, end_ts, account_locator):
-        for record in self._execute(cursor, (start_ts, end_ts)):
+        for record in self._execute(
+                cursor, _sql_window(start_ts, end_ts)):
             start = _to_utc(record.get('start_time'))
             end = _to_utc(record.get('end_time')) or start
             reader = record.get('reader_account_name') or 'reader'
@@ -877,6 +953,7 @@ class ReaderWarehouseMeteringCollector(SnowflakeUsageCollector):
                     record.get('credits_used_compute') or 0),
                 'credits_used_cloud_services': float(
                     record.get('credits_used_cloud_services') or 0),
+                **_rate_fields(record),
             }
 
 
@@ -925,7 +1002,7 @@ class ListingConsumptionCollector(SnowflakeUsageCollector):
                     'consumer_organization'),
                 'consumer_name': record.get('consumer_name'),
                 'exchange_name': record.get('exchange_name'),
-                'region': record.get('snowflake_region'),
+                'region': _row_region(record),
                 'jobs': float(record.get('jobs') or 0),
                 'unique_users_1d': float(
                     record.get('unique_users_1d') or 0),
@@ -954,6 +1031,7 @@ class UsageInCurrencyAdjustmentsCollector(SnowflakeUsageCollector):
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': (
                     f"{loc}/billing_adjustment/"
                     f"{service_type}/{usage_type}/{billing_type}"),
@@ -981,7 +1059,10 @@ class ListingAutoFulfillmentCollector(SnowflakeUsageCollector):
                 cursor, (start_ts.date(), end_ts.date())):
             start = _day_start(record.get('usage_date'))
             loc = _row_locator(record, account_locator)
-            service_type = record.get('service_type') or 'AUTO_FULFILLMENT'
+            # SF service_type (e.g. REPLICATION) is the display name only;
+            # OptScale resource_type stays LISTING_AUTO_FULFILLMENT.
+            sf_service_type = (
+                record.get('service_type') or 'AUTO_FULFILLMENT')
             yield {
                 'start_date': start,
                 'end_date': start,
@@ -989,11 +1070,11 @@ class ListingAutoFulfillmentCollector(SnowflakeUsageCollector):
                 'service_type': self.SERVICE_TYPE,
                 'account_locator': loc,
                 'account_name': _row_account_name(record),
+                'region': _row_region(record),
                 'resource_id': (
-                    f"{loc}/listing_auto_fulfillment/{service_type}"),
-                'resource_name': (
-                    f"Listing auto-fulfillment · {service_type}"),
-                'sf_service_type': service_type,
+                    f"{loc}/listing_auto_fulfillment/{sf_service_type}"),
+                'resource_name': sf_service_type,
+                'sf_service_type': sf_service_type,
                 'provider_account_locator': record.get(
                     'provider_account_locator'),
                 'currency': record.get('currency') or DEFAULT_CURRENCY,
@@ -1049,14 +1130,21 @@ class Snowflake(CloudBase):
         CloudParameter(name='role', type=str, required=False,
                        default='ACCOUNTADMIN'),
         CloudParameter(name='warehouse', type=str, required=True),
+        CloudParameter(name='backup_warehouse', type=str, required=False),
         CloudParameter(name='billing_source', type=str, required=False,
                        default=BILLING_SOURCE_ACCOUNT_USAGE),
+        # Child of snowflake_tenant: identity of the member account.
+        CloudParameter(name='account_locator', type=str, required=False),
+        # Detected via CURRENT_REGION() / ORGANIZATION_USAGE.ACCOUNTS.
+        CloudParameter(name='region', type=str, required=False),
     ]
 
     def __init__(self, cloud_config, *args, **kwargs):
         self.config = cloud_config
         self._currency = DEFAULT_CURRENCY
         self._connection = None
+        self._active_warehouse = None
+        self._used_backup_warehouse = False
 
     @property
     def account(self):
@@ -1076,7 +1164,12 @@ class Snowflake(CloudBase):
 
     @property
     def warehouse(self):
-        return self.config.get('warehouse')
+        return self._active_warehouse or self.config.get('warehouse')
+
+    @property
+    def backup_warehouse(self):
+        value = (self.config.get('backup_warehouse') or '').strip()
+        return value or None
 
     @property
     def billing_source(self):
@@ -1113,6 +1206,85 @@ class Snowflake(CloudBase):
             encryption_algorithm=serialization.NoEncryption(),
         )
 
+    @staticmethod
+    def _is_jwt_invalid_error(exc):
+        """True when Snowflake rejected a key-pair JWT (often expired in flight)."""
+        msg = str(exc).lower()
+        return (
+            'jwt token is invalid' in msg
+            or 'jwt_token_invalid' in msg
+            or 'jwt_token_invalid_expiration_time' in msg
+            or 'jwt has expired' in msg
+        )
+
+    @staticmethod
+    def _is_warehouse_unavailable_error(exc):
+        """True when the session warehouse cannot run queries.
+
+        Observed in production (090073): resource monitor quota blocks
+        warehouse resume — collectors previously soft-failed and the import
+        still completed with zero records.
+        """
+        msg = str(exc)
+        lowered = msg.lower()
+        if '090073' in msg:
+            return True
+        if 'cannot be resumed' in lowered and (
+                'resource monitor' in lowered or 'warehouse' in lowered):
+            return True
+        if 'warehouse' in lowered and 'exceeded its quota' in lowered:
+            return True
+        if 'no active warehouse' in lowered:
+            return True
+        if 'current warehouse is not available' in lowered:
+            return True
+        return False
+
+    def _try_failover_to_backup_warehouse(self, exc):
+        """Switch session warehouse to backup_warehouse after RM/quota errors."""
+        if not self._is_warehouse_unavailable_error(exc):
+            return False
+        backup = self.backup_warehouse
+        primary = (self.config.get('warehouse') or '').strip()
+        if not backup:
+            return False
+        if backup.upper() == primary.upper():
+            return False
+        if self._used_backup_warehouse:
+            return False
+        LOG.warning(
+            'Snowflake warehouse %s unavailable; failing over to backup %s: %s',
+            self.warehouse, backup, exc)
+        self._used_backup_warehouse = True
+        self._active_warehouse = backup
+        self.close()
+        return True
+
+    def _raise_if_warehouse_unavailable(self, exc):
+        if not self._is_warehouse_unavailable_error(exc):
+            return
+        if self._try_failover_to_backup_warehouse(exc):
+            raise WarehouseFailoverNeeded() from exc
+        raise CloudConnectionError(
+            'Snowflake warehouse unavailable: %s' % exc) from exc
+
+    def _open_connection(self, snowflake_connector):
+        connection = snowflake_connector.connect(
+            account=self.account,
+            user=self.user,
+            private_key=self._load_private_key_bytes(),
+            role=self.role,
+            warehouse=self.warehouse,
+            timezone='UTC',
+        )
+        # Force UTC so TIMESTAMP_LTZ filters/binds match OptScale months.
+        cursor = connection.cursor()
+        try:
+            cursor.execute("ALTER SESSION SET TIMEZONE = 'UTC'")
+        finally:
+            cursor.close()
+        return connection
+
     def connect(self):
         if self._connection is not None:
             return self._connection
@@ -1121,26 +1293,34 @@ class Snowflake(CloudBase):
         except ImportError as exc:
             raise CloudConnectionError(
                 'snowflake-connector-python is not installed') from exc
-        try:
-            self._connection = snowflake.connector.connect(
-                account=self.account,
-                user=self.user,
-                private_key=self._load_private_key_bytes(),
-                role=self.role,
-                warehouse=self.warehouse,
-                timezone='UTC',
-            )
-            # Force UTC so TIMESTAMP_LTZ filters/binds match OptScale months.
-            cursor = self._connection.cursor()
+
+        last_exc = None
+        for attempt in range(1, CONNECT_JWT_RETRY_ATTEMPTS + 1):
             try:
-                cursor.execute("ALTER SESSION SET TIMEZONE = 'UTC'")
-            finally:
-                cursor.close()
-        except Exception as exc:
-            self.close()
-            raise CloudConnectionError(
-                'Snowflake connection failed: %s' % exc) from exc
-        return self._connection
+                # Each attempt regenerates a fresh JWT inside the connector.
+                self._connection = self._open_connection(snowflake.connector)
+                return self._connection
+            except Exception as exc:
+                self.close()
+                last_exc = exc
+                if self._try_failover_to_backup_warehouse(exc):
+                    try:
+                        self._connection = self._open_connection(
+                            snowflake.connector)
+                        return self._connection
+                    except Exception as backup_exc:
+                        last_exc = backup_exc
+                        break
+                if (not self._is_jwt_invalid_error(exc)
+                        or attempt >= CONNECT_JWT_RETRY_ATTEMPTS):
+                    break
+                LOG.warning(
+                    'Snowflake JWT login failed (attempt %s/%s), retrying: %s',
+                    attempt, CONNECT_JWT_RETRY_ATTEMPTS, exc)
+                time.sleep(CONNECT_JWT_RETRY_SLEEP_SECS)
+
+        raise CloudConnectionError(
+            'Snowflake connection failed: %s' % last_exc) from last_exc
 
     def close(self):
         if self._connection is not None:
@@ -1155,6 +1335,7 @@ class Snowflake(CloudBase):
                 load_sql('probe_view.sql').format(view_name=view_name))
             cursor.fetchone()
         except Exception as exc:
+            self._raise_if_warehouse_unavailable(exc)
             warnings.append(
                 'Unable to query %s: %s' % (view_name, exc))
 
@@ -1165,8 +1346,8 @@ class Snowflake(CloudBase):
             cursor = conn.cursor()
             cursor.execute(
                 'SELECT CURRENT_ACCOUNT(), CURRENT_USER(), '
-                'CURRENT_ROLE(), CURRENT_WAREHOUSE()')
-            account_locator, user, role, warehouse = cursor.fetchone()
+                'CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_REGION()')
+            account_locator, user, role, warehouse, region = cursor.fetchone()
             if not warehouse:
                 raise CloudConnectionError(
                     'Warehouse %s is not available for the session'
@@ -1197,13 +1378,24 @@ class Snowflake(CloudBase):
             raise CloudConnectionError(str(exc)) from exc
         finally:
             self.close()
+        # Tenant children store member identity in config.account_locator;
+        # session CURRENT_ACCOUNT() is the org admin used for the connection.
+        configured_locator = self.config.get('account_locator')
+        account_id = str(configured_locator or account_locator)
+        region_value = None
+        if region is not None and str(region).strip() != '':
+            region_value = str(region)
         LOG.info(
-            'Snowflake credentials validated for account=%s user=%s role=%s',
-            account_locator, user, role)
-        return {
-            'account_id': str(account_locator),
+            'Snowflake credentials validated for account=%s user=%s role=%s '
+            'account_id=%s region=%s',
+            account_locator, user, role, account_id, region_value)
+        result = {
+            'account_id': account_id,
             'warnings': warnings,
         }
+        if region_value:
+            result['region'] = region_value
+        return result
 
     def download_usage(self, start_ts, end_ts, progress_callback=None):
         if isinstance(start_ts, str):
@@ -1250,8 +1442,15 @@ class Snowflake(CloudBase):
             account_locator = str(account_locator)
             session_account_name = (
                 str(session_account_name) if session_account_name else None)
-            product_map = self._load_product_map(cursor, account_locator)
-            account_name_map = self._load_account_name_map(cursor)
+            while True:
+                try:
+                    product_map = self._load_product_map(
+                        cursor, account_locator)
+                    account_name_map = self._load_account_name_map(cursor)
+                    break
+                except WarehouseFailoverNeeded:
+                    conn = self.connect()
+                    cursor = conn.cursor()
             if (session_account_name and account_locator
                     and str(account_locator).upper()
                     not in account_name_map):
@@ -1271,42 +1470,75 @@ class Snowflake(CloudBase):
                 message = None
                 source = collector.SOURCE or collector.SERVICE_TYPE
                 is_storage = collector.SERVICE_TYPE in ('STORAGE', 'STAGE')
-                try:
-                    for record in collector.fetch(
-                            cursor, start_ts, end_ts, account_locator):
-                        enrich_account_name(
-                            record, account_name_map, session_account_name,
-                            self.billing_source)
-                        apply_product_tag(record, product_map)
-                        records += 1
-                        used = float(record.get('credits_used') or 0)
-                        if used:
-                            credits += used
-                            day = record['start_date']
-                            if hasattr(day, 'date'):
-                                day = day.date()
-                            detail_credits[
-                                (record.get('service_type'), day)] += used
-                        bytes_used = int(record.get('average_bytes') or 0)
-                        if bytes_used:
-                            if is_storage:
-                                day = record.get('start_date')
+                fetch_attempts = 0
+                collector_ok = False
+                while True:
+                    fetch_attempts += 1
+                    try:
+                        for record in collector.fetch(
+                                cursor, start_ts, end_ts, account_locator):
+                            enrich_account_name(
+                                record, account_name_map, session_account_name,
+                                self.billing_source)
+                            apply_product_tag(record, product_map)
+                            records += 1
+                            used = float(record.get('credits_used') or 0)
+                            if used:
+                                credits += used
+                                day = record['start_date']
                                 if hasattr(day, 'date'):
                                     day = day.date()
-                                if day is not None:
-                                    storage_bytes_by_day[day] += bytes_used
-                            else:
-                                average_bytes += bytes_used
-                        yield record
-                except Exception as exc:
-                    warning = self._collector_failure_warning(
-                        source, exc)
-                    self._import_warnings.append(warning)
-                    LOG.warning(warning)
-                    status = (
-                        'skipped' if 'skipped:' in warning else 'failed')
-                    message = warning
-                else:
+                                detail_credits[
+                                    (record.get('service_type'), day)] += used
+                            bytes_used = int(record.get('average_bytes') or 0)
+                            if bytes_used:
+                                if is_storage:
+                                    day = record.get('start_date')
+                                    if hasattr(day, 'date'):
+                                        day = day.date()
+                                    if day is not None:
+                                        storage_bytes_by_day[day] += bytes_used
+                                else:
+                                    average_bytes += bytes_used
+                            yield record
+                        collector_ok = True
+                        break
+                    except WarehouseFailoverNeeded:
+                        if fetch_attempts > 1:
+                            raise CloudConnectionError(
+                                'Snowflake warehouse unavailable after '
+                                'backup failover')
+                        conn = self.connect()
+                        cursor = conn.cursor()
+                        records = 0
+                        credits = 0.0
+                        average_bytes = 0
+                        storage_bytes_by_day = defaultdict(int)
+                        continue
+                    except Exception as exc:
+                        try:
+                            self._raise_if_warehouse_unavailable(exc)
+                        except WarehouseFailoverNeeded:
+                            if fetch_attempts > 1:
+                                raise CloudConnectionError(
+                                    'Snowflake warehouse unavailable after '
+                                    'backup failover') from exc
+                            conn = self.connect()
+                            cursor = conn.cursor()
+                            records = 0
+                            credits = 0.0
+                            average_bytes = 0
+                            storage_bytes_by_day = defaultdict(int)
+                            continue
+                        warning = self._collector_failure_warning(
+                            source, exc)
+                        self._import_warnings.append(warning)
+                        LOG.warning(warning)
+                        status = (
+                            'skipped' if 'skipped:' in warning else 'failed')
+                        message = warning
+                        break
+                if collector_ok:
                     if is_storage and storage_bytes_by_day:
                         last_day = max(storage_bytes_by_day)
                         average_bytes = storage_bytes_by_day[last_day]
@@ -1401,6 +1633,7 @@ class Snowflake(CloudBase):
                 len(account_name_map),
                 sorted(account_name_map.keys()))
         except Exception as exc:
+            self._raise_if_warehouse_unavailable(exc)
             warning = (
                 'Unable to load ORGANIZATION_USAGE.ACCOUNTS for '
                 'account_name mapping: %s' % exc)
@@ -1449,6 +1682,7 @@ class Snowflake(CloudBase):
                 sorted({k[0] for k in product_map if len(k) == 4}),
                 sorted({k[-1] for k in product_map}))
         except Exception as exc:
+            self._raise_if_warehouse_unavailable(exc)
             warning = (
                 'Snowflake product mapping skipped: unable to query '
                 'RESOURCE_PRODUCT_MAPPING (%s)' % exc)
@@ -1541,6 +1775,7 @@ class Snowflake(CloudBase):
                     daily[(service_type, day)] += float(
                         record.get('credits_billed') or 0)
         except Exception as exc:
+            self._raise_if_warehouse_unavailable(exc)
             message = (
                 'Snowflake reconciliation skipped: unable to query '
                 'METERING_DAILY_HISTORY (%s)' % exc)

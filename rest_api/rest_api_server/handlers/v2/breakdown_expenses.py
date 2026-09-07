@@ -35,7 +35,7 @@ class BreakdownExpensesAsyncHandler(BreakdownExpensesBaseAsyncHandler):
             description: Breakdown by
             required: false
             type: string
-            enum: ['employee_id', 'pool_id', 'cloud_account_id',
+            enum: ['employee_id', 'pool_id', 'subpool', 'cloud_account_id',
                 'service_name', 'region', 'resource_type', 'k8s_node',
                 'k8s_namespace', 'k8s_service', 'account_locator']
         -   name: first_seen_gte

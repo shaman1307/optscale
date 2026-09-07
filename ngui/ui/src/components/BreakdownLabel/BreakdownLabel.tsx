@@ -13,6 +13,7 @@ const BreakdownLabel = ({ breakdownBy, details }) => {
   const renderer = {
     [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.EMPLOYEE_ID]: () => getLabel(),
     [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.POOL_ID]: () => <PoolLabel type={details.purpose} label={getLabel()} />,
+    [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.SUBPOOL]: () => <PoolLabel type={details.purpose} label={getLabel()} />,
     [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.CLOUD_ACCOUNT_ID]: () => <CloudLabel type={details.type} label={getLabel()} />,
     [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.SERVICE_NAME]: () => getLabel(),
     [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.REGION]: () => getLabel(),
@@ -23,7 +24,7 @@ const BreakdownLabel = ({ breakdownBy, details }) => {
     [RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.ACCOUNT_LOCATOR]: () => getLabel(),
   }[breakdownBy];
 
-  return renderer();
+  return renderer ? renderer() : getLabel();
 };
 
 export default BreakdownLabel;

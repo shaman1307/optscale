@@ -127,6 +127,9 @@ auth:
   google_oauth_client_id:
   google_oauth_client_secret:
   microsoft_oauth_client_id:
+  oidc_issuer:
+  oidc_client_id:
+  oidc_client_secret:
 
 keeper:
   name: &keeper_name keeper
@@ -245,6 +248,10 @@ ngui:
     build_mode:
     google_oauth_client_id:
     microsoft_oauth_client_id:
+    oidc_client_id:
+    oidc_issuer:
+    oidc_authorization_endpoint:
+    oidc_login_only:
     google_map_api_key:
     ganalytics_id:
     hotjar_id:
@@ -339,7 +346,7 @@ resource_discovery:
     tag: *tag
     pullPolicy: Never
   startingDeadlineSeconds: 100
-  schedule: "*/5 * * * *"
+  schedule: "0 */3 * * *"
   memory_limit: 1024
 
 demo_org_cleanup:

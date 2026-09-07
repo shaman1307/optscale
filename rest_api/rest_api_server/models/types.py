@@ -16,7 +16,7 @@ from rest_api.rest_api_server.models.enums import (
     InviteAssignmentScopeTypes, CostModelTypes, WebhookObjectTypes,
     WebhookActionTypes, ConstraintLimitStates, OrganizationConstraintTypes,
     BIOrganizationStatuses, BITypes, GeminiStatuses, PowerScheduleActions,
-    RuleOperators)
+    RuleOperators, VirtualTagModes)
 from rest_api.rest_api_server.utils import (
     is_email_format, is_uuid, is_valid_meta, MAX_32_INT,
     get_encryption_key, gen_id, MAX_64_INT,
@@ -367,6 +367,36 @@ class ConditionType(BaseType):
 
 class RuleOperator(BaseType):
     impl = Enum(RuleOperators)
+
+
+class VirtualTagMode(BaseType):
+    # Stored as MySQL ENUM which may be EXTRACT/ASSIGNMENT or extract/assignment.
+    # Native SQLAlchemy Enum lookup is case-sensitive and 500s on mismatch.
+    impl = String(32)
+
+    def validator(self, value):
+        if value is None:
+            return None
+        try:
+            return self._coerce(value)
+        except ValueError as exc:
+            raise WrongArgumentsException(Err.OE0287, [str(exc)])
+
+    @staticmethod
+    def _coerce(value):
+        if isinstance(value, VirtualTagModes):
+            return value
+        return VirtualTagModes(str(value).lower())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return self._coerce(value).value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return self._coerce(value)
 
 
 class CostModelType(BaseType):

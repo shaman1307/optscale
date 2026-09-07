@@ -21,7 +21,10 @@ from rest_api.rest_api_server.models.models import (
     CloudAccount, Pool, OrganizationConstraint, OrganizationConstraintTypes,
     OrganizationLimitHit)
 from rest_api.rest_api_server.server import make_app
-from rest_api.rest_api_server.utils import get_root_directory_path
+from rest_api.rest_api_server.utils import (
+    get_root_directory_path, is_virtual_tag_breakdown,
+    virtual_tag_filter_values_for_key, virtual_tags_for_quarter,
+    current_quarter, invoice_month_to_quarter, quarters_for_invoice_months)
 from pymongo import UpdateMany
 from contextlib import contextmanager
 
@@ -231,7 +234,7 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
     def cloud_resource_create_bulk(self, cloud_account_id, params,
                                    behavior='error_existing',
                                    return_resources=False, set_allowed=True,
-                                   is_report_import=False):
+                                   is_report_import=False, invoice_month=None):
         if set_allowed:
             resources = params['resources']
             employee_pool_map = {}
@@ -250,7 +253,7 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
 
         return self.client.cloud_resource_create_bulk(
             cloud_account_id, params, behavior, return_resources,
-            is_report_import)
+            is_report_import, invoice_month=invoice_month)
 
     @staticmethod
     def get_client(version="v2"):
@@ -405,6 +408,7 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
             '_id': {
                 'cloud_account_id': {'$ifNull': ['$cloud_account_id', None]},
                 'cluster_id': {'$ifNull': ['$cluster_id', None]},
+                'cluster_type_id': {'$ifNull': ['$cluster_type_id', None]},
                 'day': {'$trunc': {
                     '$divide': ['$first_seen', 86400]}},
             },
@@ -417,9 +421,58 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
 
     def patched_aggregate_breakdown_expenses(self, match_query, **kwargs):
         group_by = kwargs.get('breakdown_by')
+        if group_by and str(group_by).startswith('virtual_tag:'):
+            key = str(group_by).split(':', 1)[1]
+            allowed = virtual_tag_filter_values_for_key(
+                kwargs.get('virtual_tag'), key)
+            grouped = defaultdict(lambda: {'resources': set()})
+            months = list(kwargs.get('invoice_months') or [])
+            quarters = (
+                quarters_for_invoice_months(months)
+                or [current_quarter()])
+            for resource in self.resources_collection.find(match_query):
+                if months:
+                    month_pairs = [
+                        (month, invoice_month_to_quarter(month))
+                        for month in months]
+                else:
+                    month_pairs = [(None, quarters[0])]
+                for month, quarter in month_pairs:
+                    for alloc in virtual_tags_for_quarter(resource, quarter):
+                        if not isinstance(alloc, dict) or alloc.get('key') != key:
+                            continue
+                        if allowed is not None and alloc.get('value') not in allowed:
+                            continue
+                        ident = (
+                            resource.get('cloud_account_id'),
+                            resource.get('cluster_id'),
+                            resource.get('is_environment'),
+                            alloc.get('value'),
+                            alloc.get('share') or 0,
+                            month,
+                        )
+                        grouped[ident]['resources'].add(resource['_id'])
+            return [
+                {
+                    '_id': {
+                        'cloud_account_id': ident[0],
+                        'cluster_id': ident[1],
+                        'is_environment': ident[2],
+                        'virtual_tag_value': ident[3],
+                        'share': ident[4],
+                        'invoice_month': ident[5],
+                    },
+                    'resources': list(info['resources']),
+                }
+                for ident, info in grouped.items()
+            ]
+        # Resources store pool_id; subpool collapses by name after aggregation.
+        if group_by == 'subpool':
+            group_by = 'pool_id'
         group_dict = {
             'cloud_account_id': {'$ifNull': ['$cloud_account_id', None]},
             'cluster_id': {'$ifNull': ['$cluster_id', None]},
+            'cluster_type_id': {'$ifNull': ['$cluster_type_id', None]},
             'is_environment': {'$ifNull': ['$is_environment', False]},
             'day': {'$trunc': {
                 '$divide': ['$first_seen', 86400]}},
@@ -497,6 +550,19 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
         # Original pipeline uses $objectToArray in collecting tags. Mongomock
         # does not support this expression so we mock it and replace with
         # changed pipeline with the same logic.
+        if is_virtual_tag_breakdown(breakdown_by):
+            from types import SimpleNamespace
+            from rest_api.rest_api_server.controllers.resource_count import (
+                ResourceCountController)
+            # wraps= binds this helper to the test case, not the controller.
+            proxy = SimpleNamespace(
+                resources_collection=self.resources_collection,
+                _get_breakdown_dates=ResourceCountController._get_breakdown_dates,
+                invoice_months=None,
+            )
+            return ResourceCountController._get_virtual_tag_count_breakdowns(
+                proxy, match_query, breakdown_by, start_date, end_date,
+                collected_filters)
         seconds_in_day = 86400
         match_stage = {
             '$match': match_query
@@ -544,7 +610,9 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
                 'is_environment': {'$ifNull': ['$is_environment', None]}
             }
         else:
-            group_value = '$%s' % breakdown_by
+            group_field = (
+                'pool_id' if breakdown_by == 'subpool' else breakdown_by)
+            group_value = '$%s' % group_field
 
         brkdwns = {'%s' % b: {'$sum': {'$cond': [{'$and': [
             {'$lte': ['$first_breakdown', b]},
@@ -590,6 +658,110 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
                     del br[k]
         return result
 
+    def _python_clickhouse_join_fallback(self, query, data_source, external_tables,
+                                         params=None):
+        params = params or {}
+        invoice_months = None
+        if params.get('invoice_months'):
+            invoice_months = set(str(x) for x in params['invoice_months'])
+
+        def _row_matches(expense):
+            if invoice_months is not None:
+                month = str(expense.get('invoice_month') or '')
+                if month not in invoice_months or month == '':
+                    return False
+            return True
+
+        query_l = query.lower()
+        if 'distinct invoice_month' in query_l:
+            months = sorted({
+                str(e.get('invoice_month') or '')
+                for e in data_source
+                if e.get('invoice_month')
+            })
+            return '\n'.join(months) + ('\n' if months else '')
+        if 'distinct resource_id' in query_l:
+            ids = []
+            seen = set()
+            account_ids = None
+            if params.get('cloud_account_ids'):
+                account_ids = set(params['cloud_account_ids'])
+            for expense in data_source:
+                if not _row_matches(expense):
+                    continue
+                if account_ids and expense.get('cloud_account_id') not in account_ids:
+                    continue
+                resource_id = expense.get('resource_id')
+                if resource_id and resource_id not in seen:
+                    seen.add(resource_id)
+                    ids.append(resource_id)
+            return '\n'.join(str(i) for i in ids) + ('\n' if ids else '')
+        if 'JOIN' not in query:
+            return ''
+        query_l = query.lower()
+        join_on_month = (
+            'join resources' in query_l
+            and 'invoice_month' in query_l
+            and 'resources.invoice_month' in query_l)
+        resources = {}
+        for external_table in getattr(external_tables, 'files', []) or []:
+            if getattr(external_table, 'name', None) != 'resources':
+                continue
+            raw = external_table.data
+            text = raw.decode('utf-8') if isinstance(raw, bytes) else str(raw)
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                parts = line.split(',')
+                resource_id = parts[0]
+                if join_on_month:
+                    invoice_month = parts[1] if len(parts) > 1 else ''
+                    group_field = parts[2] if len(parts) > 2 else None
+                    share_idx = 3
+                else:
+                    invoice_month = None
+                    group_field = parts[1] if len(parts) > 1 else None
+                    share_idx = 2
+                if group_field in ('', '\\N', 'None'):
+                    group_field = None
+                share = 100.0
+                if len(parts) > share_idx:
+                    try:
+                        share = float(parts[share_idx])
+                    except ValueError:
+                        share = 100.0
+                key = (
+                    (resource_id, invoice_month)
+                    if join_on_month else resource_id)
+                resources[key] = (group_field, share)
+        if not resources:
+            return ''
+        aggregated = defaultdict(float)
+        for expense in data_source:
+            if not _row_matches(expense):
+                continue
+            resource_id = expense.get('resource_id')
+            if join_on_month:
+                key = (resource_id, str(expense.get('invoice_month') or ''))
+            else:
+                key = resource_id
+            if key not in resources:
+                continue
+            group_field, share = resources[key]
+            date = expense.get('date')
+            cost = float(expense.get('cost') or 0) * float(
+                expense.get('sign') or 1) * float(share) / 100.0
+            aggregated[(group_field, date)] += cost
+        lines = []
+        for (group_field, date), cost in aggregated.items():
+            group_s = '\\N' if group_field is None else str(group_field)
+            if isinstance(date, datetime):
+                date_s = date.replace(microsecond=0).isoformat(sep=' ')
+            else:
+                date_s = str(date)
+            lines.append('%s\t%s\t%s' % (group_s, date_s, cost))
+        return '\n'.join(lines) + ('\n' if lines else '')
+
     def patched_execute_clickhouse(self, query, **kwargs):
         params = kwargs.pop('parameters', {})
         external_tables = kwargs.pop('external_data', ExternalData())
@@ -600,6 +772,16 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
         for k, v in params.items():
             if isinstance(v, datetime):
                 v = f"'{v.replace(microsecond=0)}'"
+            elif isinstance(v, (list, tuple, set)):
+                items = []
+                for item in v:
+                    if isinstance(item, datetime):
+                        items.append(f"'{item.replace(microsecond=0)}'")
+                    elif isinstance(item, str):
+                        items.append(f"'{item}'")
+                    else:
+                        items.append(str(item))
+                v = f"({', '.join(items)})" if items else '(NULL)'
             query = query.replace(f"%({k})s", f"{v}")
         query = ' '.join(list(filter(
             lambda x: x != '', query.replace('\n', ' ').split(' '))))
@@ -613,7 +795,8 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
                     ('resource_id', 'String', 'default'),
                     ('date', 'DateTime', opttime.utcnow()),
                     ('cost', 'Float64', 0),
-                    ('sign', 'Int8', 1)
+                    ('sign', 'Int8', 1),
+                    ('invoice_month', 'String', ''),
                 ], self.expenses
             ),
             'traffic_expenses': (
@@ -703,6 +886,8 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
                 data_source.append({e[0]: e[2] for e in expense_field_types})
             expenses = []
             for e in data_source:
+                if 'invoice_month' not in e and 'invoice_month' in expense_fields:
+                    e['invoice_month'] = ''
                 self.assertSetEqual(set(e.keys()), set(expense_fields),
                                     'Invalid expense inserted')
                 if isinstance(e['date'], datetime):
@@ -714,22 +899,29 @@ class TestApiBase(tornado.testing.AsyncHTTPTestCase):
             expenses_str = '\\n'.join(expenses)
             ROOT_DIR = get_root_directory_path()
             clickhouse_path = f'{ROOT_DIR}/.clickhouse/clickhouse'
-            command = [
-                f'echo -e "{expenses_str}" |',
-                f'{clickhouse_path} local',
-                f'--table {table_name}',
-                f'--structure "{expenses_structure}"',
-                f'--input-format "CSV"',
-                f'--query "{query}"'
-            ]
-            res = subprocess.check_output(
-                ['bash', '-c', ' '.join(command)]).decode("utf-8")
+            if not os.path.isfile(clickhouse_path):
+                # Unit tests can run without the bundled clickhouse binary.
+                res = self._python_clickhouse_join_fallback(
+                    query, data_source, external_tables, params)
+            else:
+                command = [
+                    f'echo -e "{expenses_str}" |',
+                    f'{clickhouse_path} local',
+                    f'--table {table_name}',
+                    f'--structure "{expenses_structure}"',
+                    f'--input-format "CSV"',
+                    f'--query "{query}"'
+                ]
+                res = subprocess.check_output(
+                    ['bash', '-c', ' '.join(command)]).decode("utf-8")
         response = []
 
         def convert_value(value):
-            if v == '\\N':
+            if value == '\\N':
                 # side effect of csv writer with None values
                 return None
+            if isinstance(value, (int, float)):
+                return value
             for t in [int, float, datetime.fromisoformat]:
                 try:
                     return t(value)

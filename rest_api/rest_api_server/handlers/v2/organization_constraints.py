@@ -514,6 +514,21 @@ class OrganizationConstraintsAsyncItemHandler(BaseAsyncItemHandler,
                         description: organization constraint name
                         required: False
                         example: no instances in eu-central-1
+                    definition:
+                        type: object
+                        description: constraint definition (type-specific)
+                        required: False
+                        example:
+                            start_date: 1644309325
+                            conditions:
+                                without_tag: CI
+                    filters:
+                        type: object
+                        description: set of filters for dataset
+                        required: False
+                        example:
+                            cloud_account_id:
+                                - 8c63e980-6572-4b36-bc70-88a74d565b9e
                     last_run:
                         type: integer
                         description: last constraint check timestamp

@@ -1,10 +1,10 @@
-import { CREATE_ORGANIZATION_CONSTRAINT } from "api/restapi/actionTypes";
+import { CREATE_ORGANIZATION_CONSTRAINT, UPDATE_ORGANIZATION_CONSTRAINT } from "api/restapi/actionTypes";
 import ButtonLoader from "components/ButtonLoader";
 import { useApiState } from "hooks/useApiState";
 import { useOrganizationActionRestrictions } from "hooks/useOrganizationActionRestrictions";
 import AvailableFiltersService from "services/AvailableFiltersService";
 
-const SubmitButton = () => {
+const SubmitButton = ({ isEdit = false, isSubmitLoading = false }) => {
   const { isRestricted, restrictionReasonMessage } = useOrganizationActionRestrictions();
 
   const { useIsLoading: useIsAvailableFiltersLoading } = AvailableFiltersService();
@@ -12,6 +12,9 @@ const SubmitButton = () => {
   const isAvailableFiltersLoading = useIsAvailableFiltersLoading();
 
   const { isLoading: isCreateOrganizationConstraintLoading } = useApiState(CREATE_ORGANIZATION_CONSTRAINT);
+  const { isLoading: isUpdateOrganizationConstraintLoading } = useApiState(UPDATE_ORGANIZATION_CONSTRAINT);
+
+  const isMutationLoading = isEdit ? isUpdateOrganizationConstraintLoading : isCreateOrganizationConstraintLoading;
 
   return (
     <ButtonLoader
@@ -19,13 +22,13 @@ const SubmitButton = () => {
       messageId="save"
       color="primary"
       type="submit"
-      isLoading={isAvailableFiltersLoading || isCreateOrganizationConstraintLoading}
+      isLoading={isAvailableFiltersLoading || isMutationLoading || isSubmitLoading}
       disabled={isRestricted}
       tooltip={{
         show: isRestricted,
         value: restrictionReasonMessage,
       }}
-      dataTestId="btn_create"
+      dataTestId={isEdit ? "btn_save" : "btn_create"}
     />
   );
 };

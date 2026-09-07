@@ -11,7 +11,7 @@ from functools import cached_property
 
 from collections import defaultdict
 from pymongo import UpdateOne
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 import boto3
 from boto3.session import Config as BotoConfig
@@ -26,6 +26,21 @@ import tools.optscale_time as opttime
 
 LOG = logging.getLogger(__name__)
 CHUNK_SIZE = 200
+
+# Stable short labels for import-queue-status.sh (legend uses full names).
+# Raw expenses go to MongoDB; MariaDB only holds report_import metadata.
+# Display pipeline collapses cloud fetch + deserialize + Mongo write → MongoDB.
+# GCP: BQ → Deser → MongoDB → Clean
+IMPORT_PHASE_BQ_READ = 'BQ'
+IMPORT_PHASE_PYTHON_DESERIALIZE = 'Deser'
+# Snowflake: MongoDB (SF usage + write) → Clean  — SF is not a separate status step
+IMPORT_PHASE_SF_USAGE = 'SF'
+# AWS (CUR files): S3 → Parse → MongoDB → Clean
+IMPORT_PHASE_S3_DOWNLOAD = 'S3'
+IMPORT_PHASE_REPORT_PARSE = 'Parse'
+IMPORT_PHASE_MONGO_WRITE = 'MongoDB'
+IMPORT_PHASE_RESOURCES_CLEAN = 'Clean'
+IMPORT_PHASE_CLICKHOUSE_INSERT = 'ClickHouse'
 
 _THROTTLE_SEMAPHORES: dict[str, threading.Semaphore] = {}
 _THROTTLE_LOCK = threading.Lock()
@@ -57,6 +72,7 @@ class BaseReportImporter:
         self.clickhouse_cl = clickhouse_cl
         self.import_file = import_file
         self._cloud_adapter = None
+        self._cloud_acc = None
         self._mongo = None
         self._s3_client = None
         self.recalculate = recalculate
@@ -68,8 +84,16 @@ class BaseReportImporter:
 
     @property
     def cloud_acc(self):
-        _, cloud = self.rest_cl.cloud_account_get(self.cloud_acc_id)
-        return cloud
+        # Cache for the import run. Hitting REST on every expense row (e.g.
+        # Snowflake tenant _is_tenant_import) fails the whole import when
+        # restapi is briefly down (compose recreate / rolling restart).
+        if self._cloud_acc is None:
+            _, cloud = self.rest_cl.cloud_account_get(self.cloud_acc_id)
+            self._cloud_acc = cloud
+        return self._cloud_acc
+
+    def invalidate_cloud_acc_cache(self):
+        self._cloud_acc = None
 
     @property
     def cloud_adapter(self):
@@ -132,7 +156,8 @@ class BaseReportImporter:
                 },
                 upsert=True,
             ))
-        r = retry_mongo_upsert(self.mongo_raw.bulk_write, upsert_bulk)
+        r = retry_mongo_upsert(
+            self.mongo_raw.bulk_write, upsert_bulk, ordered=False)
         LOG.debug('updated: %s', r.bulk_api_result)
 
     @staticmethod
@@ -165,10 +190,14 @@ class BaseReportImporter:
     def create_resources_if_not_exist(self, cloud_account_id,
                                       resources_info_map,
                                       unique_id_field='cloud_resource_id'):
-        resources_data = [
-            self.get_resource_data(r_id, info, unique_id_field=unique_id_field)
-            for r_id, info in resources_info_map.items()
-        ]
+        resources_data = []
+        for r_id, info in resources_info_map.items():
+            row = self.get_resource_data(
+                r_id, info, unique_id_field=unique_id_field)
+            months = info.get('invoice_months')
+            if months:
+                row['invoice_months'] = months
+            resources_data.append(row)
         _, result = self.rest_cl.cloud_resource_create_bulk(
             cloud_account_id, {'resources': resources_data},
             behavior='skip_existing', return_resources=True,
@@ -178,16 +207,26 @@ class BaseReportImporter:
     def get_resource_info_from_expenses(self, expenses):
         raise NotImplementedError
 
+    @staticmethod
+    def _invoice_month_value(expense):
+        value = expense.get('invoice_month')
+        if value is None:
+            return ''
+        return str(value)
+
     def clean_expenses_for_resource(self, resource_id, expenses):
         clean_expenses = {}
         for e in expenses:
             usage_date = e['start_date'].replace(
                 hour=0, minute=0, second=0, microsecond=0)
-            if usage_date in clean_expenses:
-                clean_expenses[usage_date]['cost'] += e['cost']
+            invoice_month = self._invoice_month_value(e)
+            key = (usage_date, invoice_month)
+            if key in clean_expenses:
+                clean_expenses[key]['cost'] += e['cost']
             else:
-                clean_expenses[usage_date] = {
+                clean_expenses[key] = {
                     'date': usage_date,
+                    'invoice_month': invoice_month,
                     'cost': e['cost'],
                     'resource_id': resource_id,
                     'cloud_account_id': e['cloud_account_id']
@@ -201,22 +240,40 @@ class BaseReportImporter:
             expense['resource_id'],
             expense['date'],
             expense['cost'],
-            1
+            1,
+            str(expense.get('invoice_month') or ''),
         ]
         if new_cost is not None:
             expense[3] = new_cost
             expense[4] = -1
         return expense
 
+    @staticmethod
+    def _clickhouse_lookup_date(value):
+        """Naive midnight datetime so Date and DateTime rows share a lookup key."""
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                value = value.replace(tzinfo=None)
+            return value.replace(hour=0, minute=0, second=0, microsecond=0)
+        if isinstance(value, date):
+            return datetime(value.year, value.month, value.day)
+        return value
+
     def get_clickhouse_expenses(self, from_dt, to_dt, resource_ids,
                                 cloud_account_id):
+        # Do not use FINAL. Duplicate +1 rows share ORDER BY
+        # (cloud_account_id, date, resource_id, invoice_month); FINAL keeps
+        # one and a single -1 cannot collapse the rest.
+        # Stay inside [from_dt, to_dt]. Pulling invoice_month='' for all
+        # history lets unbilled_clickhouse_negations zero April/May on an
+        # August incremental (those days are not in this chunk's billed_keys).
         return self.clickhouse_cl.query("""
-            SELECT resource_id, date, cost, sign
+            SELECT resource_id, date, invoice_month, cost, sign
             FROM expenses
             WHERE cloud_account_id = %(cloud_account_id)s
+                AND resource_id in %(resource_ids)s
                 AND date >= %(from_dt)s
                 AND date <= %(to_dt)s
-                AND resource_id in %(resource_ids)s
         """, parameters={
             'cloud_account_id': cloud_account_id,
             'from_dt': from_dt,
@@ -230,9 +287,139 @@ class BaseReportImporter:
             for r_id, expenses in chunk.items()
         }
 
+    @staticmethod
+    def empty_invoice_month_negations(
+            cloud_account_id, billed_resource_dates, existing_map):
+        """Negate leftover invoice_month='' rows replaced by a billed month.
+
+        After invoice_month was added to ClickHouse ORDER BY, regenerator
+        writes YYYYMM keys and leaves the pre-migration '' copy in place.
+        Calendar SUM(date) then double-counts. Collapse '' once a billed
+        sibling exists for the same resource+date.
+        """
+        rows = []
+        for resource_id, expense_date in billed_resource_dates:
+            empty_rows = existing_map.get(resource_id, {}).get(
+                (expense_date, ''))
+            if not empty_rows:
+                continue
+            if not sum(sign for _, sign in empty_rows):
+                continue
+            empty_cost = sum(cost * sign for cost, sign in empty_rows)
+            if empty_cost == 0:
+                continue
+            rows.append(BaseReportImporter.gen_clickhouse_expense({
+                'cloud_account_id': cloud_account_id,
+                'resource_id': resource_id,
+                'date': expense_date,
+                'cost': empty_cost,
+                'invoice_month': '',
+            }, new_cost=empty_cost))
+        return rows
+
+    @staticmethod
+    def clickhouse_pairs_match_billed(pairs, billed_cost, eps=1e-6):
+        """True when unmerged rows are already one +billed collapsing row.
+
+        Duplicate +1 rows share ORDER BY (cost is not in the key). FINAL is
+        then undefined even if sum(cost*sign) equals mongo, so save_clean
+        must rewrite those days. A lone cost=0 +1 is not canonical.
+        """
+        billed = float(billed_cost or 0)
+        if not pairs:
+            return abs(billed) <= eps
+        if len(pairs) != 1:
+            return False
+        cost, sign = pairs[0]
+        return int(sign) == 1 and abs(float(cost) - billed) <= eps
+
+    @staticmethod
+    def invert_clickhouse_pairs(
+            cloud_account_id, resource_id, expense_date, invoice_month, pairs):
+        """Emit the opposite sign for every unmerged CollapsingMergeTree row.
+
+        Cost is not in ORDER BY, so one -1 with the net cancels only one +1.
+        """
+        rows = []
+        for cost, sign in pairs:
+            expense = {
+                'cloud_account_id': cloud_account_id,
+                'resource_id': resource_id,
+                'date': expense_date,
+                'cost': cost,
+                'invoice_month': invoice_month,
+            }
+            if sign == 1:
+                rows.append(BaseReportImporter.gen_clickhouse_expense(
+                    expense, new_cost=cost))
+            elif sign == -1:
+                rows.append(BaseReportImporter.gen_clickhouse_expense(expense))
+        return rows
+
+    @staticmethod
+    def unbilled_clickhouse_negations(
+            cloud_account_id, billed_keys, existing_map,
+            from_dt=None, to_dt=None):
+        """Negate ClickHouse nets that mongo did not bill in this chunk.
+
+        save_clean only upserts (date, invoice_month) present in raw. Extra
+        CH days inside the clean window (collapse leftovers, truncated
+        reimport, duplicate +1) are never visited and stay forever.
+        billed_keys is {(resource_id, date, invoice_month)}.
+
+        Do not negate days outside [from_dt, to_dt]: an incremental chunk
+        does not re-bill April/May, and those nets must stay.
+        """
+        start = BaseReportImporter._clickhouse_lookup_date(
+            from_dt) if from_dt is not None else None
+        end = BaseReportImporter._clickhouse_lookup_date(
+            to_dt) if to_dt is not None else None
+        rows = []
+        for resource_id, ch_days in existing_map.items():
+            for (expense_date, invoice_month), pairs in ch_days.items():
+                day = BaseReportImporter._clickhouse_lookup_date(
+                    expense_date)
+                if start is not None and day < start:
+                    continue
+                if end is not None and day > end:
+                    continue
+                if (resource_id, expense_date, invoice_month) in billed_keys:
+                    continue
+                net = sum(cost * sign for cost, sign in pairs)
+                if net == 0:
+                    continue
+                rows.extend(BaseReportImporter.invert_clickhouse_pairs(
+                    cloud_account_id, resource_id, expense_date,
+                    invoice_month, pairs))
+        return rows
+
+    def _clickhouse_clean_window(self, min_date, max_date):
+        from_dt = self._clickhouse_lookup_date(min_date)
+        to_dt = self._clickhouse_lookup_date(max_date)
+        period_start = getattr(self, 'period_start', None)
+        if period_start:
+            period_start = self._clickhouse_lookup_date(period_start)
+            if period_start < from_dt:
+                from_dt = period_start
+        now = self._clickhouse_lookup_date(opttime.utcnow())
+        if now > to_dt:
+            to_dt = now
+        return from_dt, to_dt
+
     def save_clean_expenses(self, cloud_account_id, chunk,
                             unique_id_field='resource_id'):
+        self.log_import_phase(IMPORT_PHASE_RESOURCES_CLEAN)
         info_map = self.get_resource_info_map(chunk)
+        for r_id, expenses in chunk.items():
+            if r_id not in info_map:
+                continue
+            months = sorted({
+                self._invoice_month_value(expense)
+                for expense in expenses
+                if self._invoice_month_value(expense)
+            })
+            if months:
+                info_map[r_id]['invoice_months'] = months
         cloud_unique_id_field = 'cloud_%s' % unique_id_field
 
         resources_map = {
@@ -245,17 +432,22 @@ class BaseReportImporter:
         clean_expenses = []
         last_expense_info = {}
         column_names = [
-            "cloud_account_id", "resource_id", "date", "cost", "sign"]
+            "cloud_account_id", "resource_id", "date", "cost", "sign",
+            "invoice_month"]
         max_date, min_date = None, None
         for r_id, expenses in chunk.items():
             resource_id = resources_map[r_id]['id']
             clean_expenses_map = self.clean_expenses_for_resource(
                 resource_id, expenses)
-            min_resource_date = min(clean_expenses_map.keys(), default=None)
-            max_resource_date = max(clean_expenses_map.keys(), default=None)
-            last_expense_cost = clean_expenses_map[max_resource_date]['cost']
-            last_expense_info[resource_id] = (max_resource_date,
-                                              last_expense_cost)
+            if not clean_expenses_map:
+                continue
+            dates = [e['date'] for e in clean_expenses_map.values()]
+            min_resource_date = min(dates)
+            max_resource_date = max(dates)
+            last_exp = max(
+                clean_expenses_map.values(), key=lambda e: e['date'])
+            last_expense_info[resource_id] = (
+                last_exp['date'], last_exp['cost'])
             if not min_date or min_resource_date < min_date:
                 min_date = min_resource_date
             if not max_date or max_resource_date > max_date:
@@ -263,34 +455,46 @@ class BaseReportImporter:
             clean_expenses.extend(clean_expenses_map.values())
         resource_ids = last_expense_info.keys()
         if resource_ids:
+            from_dt, to_dt = self._clickhouse_clean_window(min_date, max_date)
             existing_expenses = self.get_clickhouse_expenses(
-                min_date, max_date, resource_ids, cloud_account_id)
+                from_dt, to_dt, resource_ids, cloud_account_id)
             resource_id_date_cost_map = defaultdict(dict)
-            for resource_id, date, clickhouse_cost, sign in existing_expenses:
-                if not resource_id_date_cost_map[resource_id].get(date):
-                    resource_id_date_cost_map[resource_id][date] = list()
-                resource_id_date_cost_map[resource_id][date].append(
+            for (resource_id, ch_date, invoice_month, clickhouse_cost,
+                 sign) in existing_expenses:
+                date_n = self._clickhouse_lookup_date(ch_date)
+                key = (date_n, str(invoice_month or ''))
+                if not resource_id_date_cost_map[resource_id].get(key):
+                    resource_id_date_cost_map[resource_id][key] = list()
+                resource_id_date_cost_map[resource_id][key].append(
                     (clickhouse_cost, sign))
             clickhouse_expenses = []
+            billed_keys = set()
             for expense in clean_expenses:
-                expense_date = expense['date'].replace(tzinfo=None)
+                expense_date = self._clickhouse_lookup_date(expense['date'])
+                expense['date'] = expense_date
+                invoice_month = str(expense.get('invoice_month') or '')
+                lookup_key = (expense_date, invoice_month)
+                billed_keys.add(
+                    (expense['resource_id'], expense_date, invoice_month))
                 clickhouse_expense = resource_id_date_cost_map[
-                    expense['resource_id']].get(expense_date)
-                if not clickhouse_expense:
-                    clickhouse_expenses.append(
-                        self.gen_clickhouse_expense(expense))
+                    expense['resource_id']].get(lookup_key)
+                billed = expense['cost']
+                if self.clickhouse_pairs_match_billed(
+                        clickhouse_expense, billed):
                     continue
-                exists = sum([x for _, x in clickhouse_expense])
-                if exists:
-                    cost = sum([x * s for x, s in clickhouse_expense])
-                    if cost != expense['cost']:
-                        clickhouse_expenses.extend([
-                            self.gen_clickhouse_expense(expense, cost),
-                            self.gen_clickhouse_expense(expense)
-                        ])
-                else:
+                if clickhouse_expense:
+                    clickhouse_expenses.extend(
+                        self.invert_clickhouse_pairs(
+                            cloud_account_id, expense['resource_id'],
+                            expense_date, invoice_month, clickhouse_expense))
+                if abs(float(billed or 0)) > 0.000001:
                     clickhouse_expenses.append(
                         self.gen_clickhouse_expense(expense))
+            clickhouse_expenses.extend(
+                self.unbilled_clickhouse_negations(
+                    cloud_account_id, billed_keys,
+                    resource_id_date_cost_map,
+                    from_dt=from_dt, to_dt=to_dt))
             if clickhouse_expenses:
                 self.update_clickhouse_expenses(clickhouse_expenses,
                                                 column_names)
@@ -442,13 +646,25 @@ class BaseReportImporter:
             self.load_raw_data()
             regeneration = False
         LOG.info('Generating clean records')
+        self.log_import_phase(IMPORT_PHASE_RESOURCES_CLEAN)
         self.generate_clean_records(regeneration=regeneration)
+
+    # Billing importers that do not share a cloud-provider API rate-limit
+    # quota via parent_id. GCP children query BigQuery independently; the
+    # per-tenant semaphore (MPT-21087) is for Azure-like APIs that 429 when
+    # many sibling accounts import in parallel.
+    _TENANT_THROTTLE_EXEMPT_TYPES = frozenset({'gcp_cnr', 'gcp_tenant'})
 
     def import_report(self):
         parent_id = self.cloud_acc.get('parent_id')
+        cloud_type = (self.cloud_acc.get('type') or '').lower()
+        use_throttle = (
+            bool(parent_id)
+            and cloud_type not in self._TENANT_THROTTLE_EXEMPT_TYPES
+        )
         throttle = (
             _get_throttle_semaphore(parent_id, self.max_tenant_concurrent)
-            if parent_id else nullcontext()
+            if use_throttle else nullcontext()
         )
         with throttle:
             self._run_import()
@@ -468,7 +684,13 @@ class BaseReportImporter:
         LOG.info('Import completed')
 
         LOG.info('Processing alerts')
-        self.process_alerts()
+        try:
+            self.process_alerts()
+        except Exception as exc:
+            # Alerts are post-processing: do not fail a successful import.
+            LOG.exception(
+                'process_alerts failed for %s (import data is complete): %s',
+                self.cloud_acc_id, exc)
 
         LOG.info('Creating traffic processing tasks')
         self.create_traffic_processing_tasks()
@@ -478,20 +700,30 @@ class BaseReportImporter:
 
         LOG.info('Processing completed')
 
+    def log_import_phase(self, phase):
+        """Emit a parseable phase marker for import-queue-status.sh."""
+        LOG.info('Import phase for %s: %s', self.cloud_acc_id, phase)
+
     def update_clickhouse_expenses(self, expenses, column_names):
+        self.log_import_phase(IMPORT_PHASE_CLICKHOUSE_INSERT)
         self.clickhouse_cl.insert(
             'expenses', expenses, column_names=column_names)
 
     def update_cloud_import_time(self, ts):
+        # Clear prior attempt error so UI "Billing import failed" does not
+        # stick after a successful run (esp. when last_import_at is later
+        # rewound for a full reimport).
         self.rest_cl.cloud_account_update(self.cloud_acc_id,
                                           {'last_import_at': ts,
-                                           'last_import_attempt_at': ts})
+                                           'last_import_attempt_at': ts,
+                                           'last_import_attempt_error': None})
 
     def update_cloud_import_attempt(self, ts, error=None):
         self.rest_cl.cloud_account_update(
             self.cloud_acc_id,
             {'last_import_attempt_at': ts,
-             'last_import_attempt_error': error[:255]})
+             'last_import_attempt_error': (
+                 error[:255] if error else None)})
 
     def update_cloud_account_config(self):
         pass
@@ -573,6 +805,50 @@ class BaseReportImporter:
         LOG.info('Raw expenses for cloud account %s since %s were '
                  'deleted: %s' % (
                     cloud_account_id, self.period_start, r.raw_result))
+
+    def _clear_clickhouse_expenses_from_period_start(
+            self, cloud_account_id=None):
+        """Hard-delete ClickHouse rows for a period reload. Increments merge."""
+        ca_id = cloud_account_id or self.cloud_acc_id
+        from_dt = self.period_start
+        if from_dt is None:
+            return
+        if getattr(from_dt, 'tzinfo', None) is not None:
+            from_dt = from_dt.replace(tzinfo=None)
+        LOG.info(
+            'Clearing ClickHouse expenses for cloud account %s since %s',
+            ca_id, from_dt)
+        self.clickhouse_cl.query(
+            'ALTER TABLE expenses DELETE WHERE cloud_account_id = %(ca_id)s '
+            'AND date >= %(from_dt)s',
+            parameters={
+                'ca_id': ca_id,
+                'from_dt': from_dt,
+            })
+        self._wait_clickhouse_period_cleared(ca_id, from_dt)
+
+    def _wait_clickhouse_period_cleared(self, ca_id, from_dt, timeout_sec=180):
+        deadline = time.time() + timeout_sec
+        while True:
+            pending = self.clickhouse_cl.query(
+                "SELECT count() FROM system.mutations "
+                "WHERE table = 'expenses' AND is_done = 0"
+            ).result_rows
+            leftover = self.clickhouse_cl.query(
+                'SELECT count() FROM expenses '
+                'WHERE cloud_account_id = %(ca_id)s AND date >= %(from_dt)s',
+                parameters={'ca_id': ca_id, 'from_dt': from_dt},
+            ).result_rows
+            pending_n = int(pending[0][0]) if pending else 0
+            leftover_n = int(leftover[0][0]) if leftover else 0
+            if pending_n == 0 and leftover_n == 0:
+                return
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    'ClickHouse period clear did not finish for %s since %s '
+                    '(pending_mutations=%s leftover_rows=%s)' % (
+                        ca_id, from_dt, pending_n, leftover_n))
+            time.sleep(1)
 
     def create_traffic_processing_tasks(self):
         return
@@ -813,7 +1089,8 @@ class CSVBaseReportImporter(BaseReportImporter):
             self.rest_cl.cloud_account_update(
                 cloud_acc_id,
                 {'last_import_attempt_at': ts,
-                 'last_import_attempt_error': error[:255]})
+                 'last_import_attempt_error': (
+                     error[:255] if error else None)})
 
     def update_cloud_import_time(self, ts):
         for cloud_acc_id in self.detected_cloud_accounts:
@@ -821,4 +1098,5 @@ class CSVBaseReportImporter(BaseReportImporter):
                 cloud_acc_id,
                 {'last_import_at': ts,
                  'last_import_modified_at': self.last_import_modified_at,
-                 'last_import_attempt_at': ts})
+                 'last_import_attempt_at': ts,
+                 'last_import_attempt_error': None})

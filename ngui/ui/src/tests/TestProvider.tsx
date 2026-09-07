@@ -1,3 +1,4 @@
+import { ApolloClient, ApolloLink, ApolloProvider, InMemoryCache } from "@apollo/client";
 import { IntlProvider } from "react-intl";
 import { Provider } from "react-redux";
 import { MemoryRouter } from "react-router-dom";
@@ -10,15 +11,21 @@ const mockStore = createMockStore([apiMiddleware]);
 
 const TestProvider = ({ children, state = {} }) => {
   const store = mockStore(state);
+  const apolloClient = new ApolloClient({
+    cache: new InMemoryCache(),
+    link: ApolloLink.empty(),
+  });
 
   return (
-    <Provider store={store}>
-      <ThemeProviderWrapper>
-        <IntlProvider {...intlConfig}>
-          <MemoryRouter>{children}</MemoryRouter>
-        </IntlProvider>
-      </ThemeProviderWrapper>
-    </Provider>
+    <ApolloProvider client={apolloClient}>
+      <Provider store={store}>
+        <ThemeProviderWrapper>
+          <IntlProvider {...intlConfig}>
+            <MemoryRouter>{children}</MemoryRouter>
+          </IntlProvider>
+        </ThemeProviderWrapper>
+      </Provider>
+    </ApolloProvider>
   );
 };
 

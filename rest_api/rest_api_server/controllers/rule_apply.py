@@ -43,13 +43,10 @@ class RuleWrapper:
         pass
 
     def match(self, res_info):
-        for condition in self.converted_conditions:
-            cond_match = condition.match(res_info)
-            if not cond_match and self.rule.operator == RuleOperators.AND:
-                return False
-            elif cond_match and self.rule.operator == RuleOperators.OR:
-                return True
-        return True if self.rule.operator == RuleOperators.AND else False
+        return match_conditions(
+            [cond for cond in self.rule.conditions if not cond.deleted],
+            res_info,
+            self.rule.operator)
 
 
 class BaseCondition:
@@ -195,6 +192,24 @@ CONDITIONS_MAP = {
 }
 
 
+def match_conditions(conditions, res_info, operator=RuleOperators.AND):
+    """AND/OR match using the same ConditionTypes as pool assignment rules."""
+    converted = []
+    for cond in conditions or []:
+        if getattr(cond, 'deleted', False):
+            continue
+        factory = CONDITIONS_MAP.get(cond.type)
+        if factory:
+            converted.append(factory(cond))
+    for condition in converted:
+        cond_match = condition.match(res_info)
+        if not cond_match and operator == RuleOperators.AND:
+            return False
+        if cond_match and operator == RuleOperators.OR:
+            return True
+    return True if operator == RuleOperators.AND else False
+
+
 class RuleApplyController(BaseController, MongoMixin):
     @staticmethod
     def apply_rules(res_info, rules):
@@ -225,9 +240,10 @@ class RuleApplyController(BaseController, MongoMixin):
         if pool is None:
             raise NotFoundException(Err.OE0002, [Pool.__name__, pool_id])
         target = 'pool {}'.format(pool.name)
+        organization_name = employee.organization.name
         meta = {
             'target': target,
-            'object_name': employee.organization.name
+            'object_name': organization_name
         }
         self.publish_activities_task(
             employee.organization_id, employee.organization_id,
@@ -253,6 +269,16 @@ class RuleApplyController(BaseController, MongoMixin):
             resource_filter['pool_id'] = pool_id
 
         rules = self.get_valid_rules(organization_id, employee_allowed_pools)
+        # Prefetch pool names while the MariaDB session is still fresh.
+        # Matching large pools can idle past wait_timeout; a post-loop SQL
+        # lookup then fails. Historically that lookup also ran before
+        # bulk_write, so assignment updates were never persisted.
+        pool_names = {
+            b['id']: b['name']
+            for b in PoolController(
+                self.session, self._config, self.token
+            ).get_organization_pools(organization_id)
+        }
 
         resources_ids = list(self.resources_collection.find(
             resource_filter, {'_id': 1}))
@@ -317,11 +343,14 @@ class RuleApplyController(BaseController, MongoMixin):
                             },
                         ))
                     events.extend(r_events)
+
+        # Persist assignments before activity fan-out (must not depend on
+        # the long-lived MariaDB connection still being alive).
+        chunk_size = 200
+        for i in range(0, len(resource_update_chunk), chunk_size):
+            self.resources_collection.bulk_write(
+                resource_update_chunk[i:i + chunk_size])
         if applied_rules_map:
-            pools_for_org = PoolController(
-                self.session, self._config, self.token
-            ).get_organization_pools(organization_id)
-            pool_names = {b['id']: b['name'] for b in pools_for_org}
             for rule in applied_rules_map.values():
                 rule.update({
                     'pool_name': pool_names.get(rule['pool_id'])
@@ -335,16 +364,12 @@ class RuleApplyController(BaseController, MongoMixin):
                 self.publish_activities_task(
                     organization_id, rule['id'], 'rule', 'rule_applied', meta,
                     'rule.rule_applied', add_token=True)
-        chunk_size = 200
-        for i in range(0, len(resource_update_chunk), chunk_size):
-            self.resources_collection.bulk_write(
-                resource_update_chunk[i:i + chunk_size])
         for e in events:
             self.publish_cloud_acc_activities(*e)
         meta = {
             'target': target,
             'total': total_count,
-            'object_name': employee.organization.name
+            'object_name': organization_name
         }
         self.publish_activities_task(
             employee.organization_id, employee.organization_id,

@@ -8,14 +8,20 @@ import {
 import Mocked from "components/Mocked";
 import PoolExpensesBreakdownContainer from "containers/PoolExpensesBreakdownContainer";
 import { COST_EXPLORER, EXPENSES_FILTERBY_TYPES, FILTER_BY } from "utils/constants";
+import { isVirtualTagBreakdown } from "utils/virtualTagBreakdown";
 
-const getMockupComponent = (filterBy) =>
-  ({
+const getMockupComponent = (filterBy) => {
+  if (isVirtualTagBreakdown(filterBy)) {
+    return <ExpensesBreakdownForCloudMocked />;
+  }
+  return {
     [COST_EXPLORER]: <CostExplorerMocked />,
     [EXPENSES_FILTERBY_TYPES.CLOUD]: <ExpensesBreakdownForCloudMocked />,
+    [EXPENSES_FILTERBY_TYPES.VENDOR]: <ExpensesBreakdownForCloudMocked />,
     [EXPENSES_FILTERBY_TYPES.POOL]: <ExpensesBreakdownForPoolMocked />,
     [EXPENSES_FILTERBY_TYPES.EMPLOYEE]: <ExpensesBreakdownForOwnerMocked />,
-  })[filterBy];
+  }[filterBy];
+};
 
 const Expenses = () => {
   const [searchParams] = useSearchParams();

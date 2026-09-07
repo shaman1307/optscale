@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from rest_api.rest_api_server.controllers.base_async import BaseAsyncControllerWrapper
 from rest_api.rest_api_server.controllers.breakdown_expense import BreakdownBaseController
-from rest_api.rest_api_server.controllers.expense import NOT_SET_NAME
+from rest_api.rest_api_server.controllers.expense import NOT_SET_NAME, clickhouse_time_filter
 from tools.optscale_data.clickhouse import ExternalDataConverter
 
 LOG = logging.getLogger(__name__)
@@ -87,19 +87,21 @@ class BreakdownMetaController(BreakdownBaseController):
         return resources_table, cnt_map
 
     def get_breakdown_expenses(self, cloud_account_ids, resources):
+        time_sql, time_params = clickhouse_time_filter(
+            invoice_months=self.invoice_months,
+            start_date=self.start_date, end_date=self.end_date,
+            date_column='expenses.date')
         expenses = self.execute_clickhouse(
             query=f"""
                 SELECT resources.breakdown_by, sum(cost*sign), date
                 FROM expenses
                 JOIN resources ON expenses.resource_id = resources.id
-                WHERE expenses.date >= %(start_date)s
-                    AND expenses.date <= %(end_date)s
+                WHERE {time_sql}
                     AND cloud_account_id in %(cloud_account_ids)s
                 GROUP BY resources.breakdown_by, date
             """,
             parameters={
-                'start_date': self.start_date,
-                'end_date': self.end_date,
+                **time_params,
                 'cloud_account_ids': list(cloud_account_ids)
             },
             external_data=ExternalDataConverter()([{
@@ -132,18 +134,23 @@ class BreakdownMetaController(BreakdownBaseController):
         cloud_account_ids = list(map(lambda x: x.id, organization_cloud_accs))
         expenses = self.get_breakdown_expenses(
             cloud_account_ids, resources_table)
-        points = self.get_date_points(self.start_date, self.end_date)
+        if self.invoice_months or self.start_date is None:
+            points = sorted(expenses.keys())
+        else:
+            points = self.get_date_points(self.start_date, self.end_date)
         breakdown = {p: defaultdict(inner_breakdown_factory) for p in points}
         totals = defaultdict(inner_breakdown_factory)
 
         # calculate counts for breakdown and totals
         for r in resources_table:
+            breakdown_by = r['breakdown_by']
+            totals[breakdown_by]['count'] += 1
+            if self.invoice_months or self.start_date is None:
+                continue
             r_points = self.get_date_points(
                 r.get('first_seen'), r.get('last_seen'),
                 last_point=self.end_date
             )
-            breakdown_by = r['breakdown_by']
-            totals[breakdown_by]['count'] += 1
             for p in r_points:
                 if p not in breakdown:
                     continue

@@ -8,6 +8,8 @@ import DnsOutlinedIcon from "@mui/icons-material/DnsOutlined";
 import ErrorOutlineOutlinedIcon from "@mui/icons-material/ErrorOutlineOutlined";
 import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import LabelOutlinedIcon from "@mui/icons-material/LabelOutlined";
+import LabelOffOutlinedIcon from "@mui/icons-material/LabelOffOutlined";
 import LocalOfferOutlinedIcon from "@mui/icons-material/LocalOfferOutlined";
 import LocationOnOutlinedIcon from "@mui/icons-material/LocationOnOutlined";
 import MiscellaneousServicesOutlinedIcon from "@mui/icons-material/MiscellaneousServicesOutlined";
@@ -15,8 +17,11 @@ import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined
 import RecommendOutlinedIcon from "@mui/icons-material/RecommendOutlined";
 import SwapHorizOutlinedIcon from "@mui/icons-material/SwapHorizOutlined";
 import ToggleOnOutlinedIcon from "@mui/icons-material/ToggleOnOutlined";
+import { Box, Typography } from "@mui/material";
 import { FormattedMessage } from "react-intl";
 import CloudLabel from "components/CloudLabel";
+import CloudTypeIcon from "components/CloudTypeIcon";
+import { buildPoolFilterTree } from "components/FilterComponents/selectionFilterGroups";
 import PoolLabel from "components/PoolLabel";
 import ResourceTypeLabel from "components/ResourceTypeLabel";
 import { intl } from "translations/react-intl-config";
@@ -29,9 +34,11 @@ import {
   CLOUD_ACCOUNT_TYPES_LIST,
   POOL_TYPES_LIST,
 } from "utils/constants";
+import { compareDataSourceVendors, getDataSourceVendor, getDataSourceVendorById } from "utils/dataSourceVendors";
 import { EN_FORMAT, formatUTC, millisecondsToSeconds, moveDateToUTC, secondsToMilliseconds } from "utils/datetime";
 import { getMetaFormattedName } from "utils/metadata";
 import { getSearchParams } from "utils/network";
+import { getPoolTypeMessageId, isPoolTypeGroup } from "utils/pools";
 import { isNumber } from "utils/validation";
 
 const getSelectionAppliedValuesFromSearchParams = (parameterName) => {
@@ -72,6 +79,20 @@ export const FILTER_CONFIGS = {
     icon: <CloudOutlinedIcon />,
     renderItem: (item) => <CloudLabel id={item.id} name={item.name} type={item.type} disableLink />,
     renderSelectedItem: (item) => item.name,
+    groupBy: (item) => getDataSourceVendor(item.type).id,
+    sortGroups: compareDataSourceVendors,
+    defaultGroupsCollapsed: true,
+    renderGroupHeader: (groupKey) => {
+      const vendor = getDataSourceVendorById(groupKey);
+      return (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+          <CloudTypeIcon type={vendor.iconType} fontSize="small" />
+          <Typography variant="subtitle2" noWrap>
+            <FormattedMessage id={vendor.labelMessageId} />
+          </Typography>
+        </Box>
+      );
+    },
     renderPerspectiveItem: (appliedValue, filterValues, { stringify = false } = {}) => {
       const item = filterValues.find((filterValue) => filterValue.id === appliedValue);
 
@@ -155,9 +176,30 @@ export const FILTER_CONFIGS = {
     label: <FormattedMessage id="pool" />,
     labelString: intl.formatMessage({ id: "pool" }),
     icon: <FolderOutlinedIcon />,
-    renderItem: (item) => <PoolLabel name={item.name} type={item.purpose} disableLink id={item.id} label={item.name} />,
+    renderItem: (item) => {
+      if (isPoolTypeGroup(item)) {
+        return (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
+            <Typography variant="subtitle2" noWrap>
+              <FormattedMessage id={getPoolTypeMessageId(item.purpose)} />
+            </Typography>
+            <Typography variant="caption" color="text.secondary" component="span">
+              ({item.childrenCount || 0})
+            </Typography>
+          </Box>
+        );
+      }
+      return <PoolLabel name={item.name} type={item.purpose} disableLink id={item.id} label={item.name} />;
+    },
     renderSelectedItem: (item) => item.name,
-    searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
+    searchPredicate: (item, query) => {
+      if (isPoolTypeGroup(item)) {
+        return false;
+      }
+      return item.name.toLowerCase().includes(query.toLowerCase());
+    },
+    defaultTreeCollapsed: true,
+    popoverWidth: 380,
     renderPerspectiveItem: (appliedValue, filterValues, { stringify = false } = {}) => {
       const withSubpools = isPoolIdWithSubPools(appliedValue);
 
@@ -189,6 +231,7 @@ export const FILTER_CONFIGS = {
           values: values.filter((value) => isPoolIdWithSubPools(value)).map((value) => value.slice(0, -1)),
           settings: {
             withSubpools: true,
+            onlySubpools: false,
           },
         };
       }
@@ -197,6 +240,7 @@ export const FILTER_CONFIGS = {
         values: values,
         settings: {
           withSubpools: false,
+          onlySubpools: false,
         },
       };
     },
@@ -204,15 +248,29 @@ export const FILTER_CONFIGS = {
       values: [],
       settings: {
         withSubpools: false,
+        onlySubpools: false,
       },
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (pools) =>
-        pools?.map((item) => ({
-          ...item,
-          value: item.id,
-        })) ?? [],
+        pools
+          ?.filter((item) => item !== null)
+          .map((item) => ({
+            ...item,
+            value: item.id,
+            parent_id: item.parent_id ?? null,
+            selectable: true,
+          })) ?? [],
+      getTreeNodes: (pools) =>
+        buildPoolFilterTree(
+          pools
+            ?.filter((item) => item !== null)
+            .map((item) => ({
+              ...item,
+              parent_id: item.parent_id ?? null,
+            })) ?? []
+        ),
       getValue: (item) => item.id,
       toApi: (appliedFilter) => ({
         poolId: appliedFilter.settings?.withSubpools
@@ -226,6 +284,10 @@ export const FILTER_CONFIGS = {
       {
         name: "withSubpools",
         label: <FormattedMessage id="withSubPools" />,
+      },
+      {
+        name: "onlySubpools",
+        label: <FormattedMessage id="onlySubPools" />,
       },
     ],
     schema: {
@@ -246,6 +308,10 @@ export const FILTER_CONFIGS = {
               purpose: {
                 type: "string",
                 enum: POOL_TYPES_LIST,
+              },
+              parent_id: {
+                type: "string",
+                nullable: true,
               },
             },
           },
@@ -343,6 +409,27 @@ export const FILTER_CONFIGS = {
       return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     renderSelectedItem: (item) => item.name,
+    groupBy: (item) => (item.value === EMPTY_UUID ? "unknown" : getDataSourceVendor(item.cloud_type).id),
+    sortGroups: compareDataSourceVendors,
+    defaultGroupsCollapsed: true,
+    renderGroupHeader: (groupKey) => {
+      if (groupKey === "unknown") {
+        return (
+          <Typography variant="subtitle2" noWrap>
+            <FormattedMessage id="notSet" />
+          </Typography>
+        );
+      }
+      const vendor = getDataSourceVendorById(groupKey);
+      return (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+          <CloudTypeIcon type={vendor.iconType} fontSize="small" />
+          <Typography variant="subtitle2" noWrap>
+            <FormattedMessage id={vendor.labelMessageId} />
+          </Typography>
+        </Box>
+      );
+    },
     searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
     renderPerspectiveItem: (appliedValue, filterValues, { stringify = false } = {}) => {
       const item = filterValues.find((filterValue) => {
@@ -1020,6 +1107,87 @@ export const FILTER_CONFIGS = {
       },
     },
   },
+  virtualTag: {
+    id: "virtualTag",
+    apiName: "virtual_tag",
+    type: "selection",
+    label: <FormattedMessage id="virtualTag" />,
+    labelString: intl.formatMessage({ id: "virtualTag" }),
+    icon: <LabelOutlinedIcon />,
+    renderItem: (item) => item.name,
+    renderSelectedItem: (item) => item.name,
+    searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
+    renderPerspectiveItem: (appliedValue) =>
+      appliedValue === EMPTY_UUID ? intl.formatMessage({ id: "noVirtualTag" }) : appliedValue,
+    getValuesFromSearchParams: () => ({
+      values: getSelectionAppliedValuesFromSearchParams("virtualTag"),
+    }),
+    getDefaultValue: () => ({
+      values: [],
+    }),
+    isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
+    transformers: {
+      getItems: (pairs) => {
+        const noVirtualTagItem = {
+          name: intl.formatMessage({ id: "noVirtualTag" }),
+          value: EMPTY_UUID,
+        };
+        const items = [];
+        for (const pair of pairs ?? []) {
+          if (pair == null || pair === EMPTY_UUID || (typeof pair === "object" && pair.key == null)) {
+            continue;
+          }
+          if (typeof pair === "string") {
+            if (pair === EMPTY_UUID) {
+              continue;
+            }
+            items.push({ name: pair, value: pair });
+            continue;
+          }
+          items.push({
+            name: `${pair.key}:${pair.value}`,
+            value: `${pair.key}:${pair.value}`,
+          });
+        }
+        return [noVirtualTagItem, ...items];
+      },
+      getValue: (item) => item.value ?? item,
+      toApi: (appliedFilter) => ({
+        virtualTag: appliedFilter.values,
+      }),
+      filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
+        filterValues.filter((filterValue) => {
+          if (filterValue == null || filterValue === EMPTY_UUID || filterValue.key == null) {
+            return appliedFilters.includes(EMPTY_UUID);
+          }
+          const value = typeof filterValue === "string" ? filterValue : `${filterValue.key}:${filterValue.value}`;
+          return appliedFilters.includes(value);
+        }),
+    },
+    schema: {
+      filterValues: {
+        virtual_tag: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["key"],
+            properties: {
+              key: { type: ["string", "null"] },
+              value: { type: ["string", "null"] },
+            },
+          },
+        },
+      },
+      appliedFilter: {
+        virtualTag: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+        },
+      },
+    },
+  },
   withoutTag: {
     id: "withoutTag",
     apiName: "without_tag",
@@ -1073,6 +1241,62 @@ export const FILTER_CONFIGS = {
           type: "array",
           items: {
             type: "string",
+          },
+        },
+      },
+    },
+  },
+  noTag: {
+    id: "noTag",
+    apiName: "no_tag",
+    type: "selection",
+    label: <FormattedMessage id="noTag" />,
+    labelString: intl.formatMessage({ id: "noTag" }),
+    icon: <LabelOffOutlinedIcon />,
+    renderItem: (item) => item.name,
+    renderSelectedItem: (item) => item.name,
+    searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
+    renderPerspectiveItem: (appliedValue) =>
+      appliedValue ? intl.formatMessage({ id: "noTag" }) : intl.formatMessage({ id: "any" }),
+    getValuesFromSearchParams: () => {
+      const values = getSelectionAppliedValuesFromSearchParams("noTag");
+      const enabled = values.some((value) => value === true || value === "true");
+      return {
+        values: enabled ? [true] : [],
+      };
+    },
+    getDefaultValue: () => ({
+      values: [],
+    }),
+    isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
+    transformers: {
+      getItems: () => [
+        {
+          name: intl.formatMessage({ id: "noTag" }),
+          value: true,
+        },
+      ],
+      getValue: (item) => item,
+      toApi: (appliedFilter) => ({
+        noTag: appliedFilter.values,
+      }),
+      filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
+    },
+    schema: {
+      filterValues: {
+        no_tag: {
+          type: "array",
+          items: {
+            type: "boolean",
+          },
+        },
+      },
+      appliedFilter: {
+        noTag: {
+          type: "array",
+          items: {
+            type: "boolean",
           },
         },
       },
@@ -1305,8 +1529,8 @@ export const FILTER_CONFIGS = {
     id: "accountLocator",
     apiName: "account_locator",
     type: "selection",
-    label: <FormattedMessage id="accountLocator" />,
-    labelString: intl.formatMessage({ id: "accountLocator" }),
+    label: <FormattedMessage id="sfAccount" />,
+    labelString: intl.formatMessage({ id: "sfAccount" }),
     icon: <BadgeOutlinedIcon />,
     renderItem: (item) => <CloudLabel name={item.name} type={item.cloud_type} disableLink />,
     renderSelectedItem: (item) => item.name,

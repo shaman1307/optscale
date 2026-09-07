@@ -992,8 +992,11 @@ class TestCloudResourceApi(TestApiBase):
                 self.assertEqual(resource[k], v, k)
         self.assertIsNotNone(response['sub_resources'][0].get('details'))
         self.assertIsNotNone(response.get('details'))
-        for k in ['cloud_type', 'cloud_name', 'service_name', 'region']:
-            self.assertIsNone(response.get('details', {}).get(k))
+        details = response.get('details', {})
+        self.assertEqual(details.get('cloud_name'), self.cloud_acc['name'])
+        self.assertIsNotNone(details.get('cloud_type'))
+        for k in ['service_name', 'region']:
+            self.assertIsNone(details.get(k))
 
         with freeze_time(datetime(2020, 2, 28)):
             expenses = [

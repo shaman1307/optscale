@@ -85,6 +85,11 @@ class RestApiClient extends BaseClient {
     return response.report_imports ?? [];
   }
 
+  async getResourceDuplicates(cloudAccountId: string) {
+    const path = `cloud_accounts/${cloudAccountId}/resource_duplicates`;
+    return this.get(path);
+  }
+
   async createDataSource(
     organizationId: MutationCreateDataSourceArgs["organizationId"],
     params: MutationCreateDataSourceArgs["params"]

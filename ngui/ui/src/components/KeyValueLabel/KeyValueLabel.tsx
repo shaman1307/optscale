@@ -24,10 +24,11 @@ type KeyValueLabelProps = KeyType & {
   };
   gutterBottom?: boolean;
   sx?: SxProps<Theme>;
+  nowrap?: boolean;
 };
 
 const KeyValueLabel = forwardRef<HTMLDivElement, KeyValueLabelProps>(
-  ({ value, variant, keyMessageId, keyText, isBoldValue = true, dataTestIds = {}, sx = {}, gutterBottom = false }, ref) => {
+  ({ value, variant, keyMessageId, keyText, isBoldValue = true, dataTestIds = {}, sx = {}, gutterBottom = false, nowrap = false }, ref) => {
     const renderValue = () => {
       if (value || value === 0) {
         return value;
@@ -56,7 +57,7 @@ const KeyValueLabel = forwardRef<HTMLDivElement, KeyValueLabelProps>(
         sx={{
           display: "flex",
           alignItems: "center",
-          flexWrap: "wrap",
+          flexWrap: nowrap ? "nowrap" : "wrap",
           ...sx,
         }}
       >
@@ -65,8 +66,8 @@ const KeyValueLabel = forwardRef<HTMLDivElement, KeyValueLabelProps>(
           sx={{
             display: "flex",
             flexWrap: "nowrap",
-            whiteSpace: "normal",
-            overflowWrap: "anywhere",
+            whiteSpace: nowrap ? "nowrap" : "normal",
+            overflowWrap: nowrap ? "normal" : "anywhere",
           }}
         >
           {renderKey()}
@@ -75,8 +76,8 @@ const KeyValueLabel = forwardRef<HTMLDivElement, KeyValueLabelProps>(
         <Box
           sx={{
             fontWeight: isBoldValue ? "bold" : undefined,
-            whiteSpace: "normal",
-            overflowWrap: "anywhere",
+            whiteSpace: nowrap ? "nowrap" : "normal",
+            overflowWrap: nowrap ? "normal" : "anywhere",
           }}
           data-test-id={valueDataTestId}
         >

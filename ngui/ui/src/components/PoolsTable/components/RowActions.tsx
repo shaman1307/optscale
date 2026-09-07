@@ -9,17 +9,24 @@ import { useOpenSideModal } from "hooks/useOpenSideModal";
 import { getThisMonthPoolExpensesUrl, getThisMonthResourcesByPoolUrl } from "urls";
 import { isEmptyArray } from "utils/arrays";
 import { SCOPE_TYPES } from "utils/constants";
+import { isPoolTypeGroup } from "utils/pools";
 
 const RowActions = ({
   row: {
-    original: { parent_id: parentId, id, name, unallocated_limit: unallocatedLimit },
+    original,
+    original: { parent_id: parentId, id, name, unallocated_limit: unallocatedLimit, hasNestedChildren },
     subRows,
   },
 }) => {
   const navigate = useNavigate();
   const openSideModal = useOpenSideModal();
 
-  const hasChildren = !isEmptyArray(subRows);
+  if (isPoolTypeGroup(original)) {
+    return null;
+  }
+
+  // Lazy expand keeps subRows empty while collapsed; prefer explicit nested flag.
+  const hasChildren = Boolean(hasNestedChildren) || !isEmptyArray(subRows);
 
   const getDeleteTooltip = () => {
     if (!parentId) {

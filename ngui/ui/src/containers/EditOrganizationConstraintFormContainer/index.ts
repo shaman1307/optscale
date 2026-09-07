@@ -1,0 +1,3 @@
+import EditOrganizationConstraintFormContainer from "./EditOrganizationConstraintFormContainer";
+
+export default EditOrganizationConstraintFormContainer;

@@ -13,6 +13,8 @@ x-etcd-env: &etcd-env
 
 x-restart: &restart
   restart: unless-stopped
+  ulimits:
+    core: 0
 
 x-healthcheck-tcp: &healthcheck-tcp
   interval: 5s
@@ -46,6 +48,12 @@ services:
     <<: *restart
     environment:
       MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+    # Keep idle SQL sessions alive for long rules_apply / import jobs
+    # (image default wait_timeout=600 drops the restapi connection mid-run).
+    command:
+      - mysqld
+      - --wait-timeout=28800
+      - --interactive-timeout=28800
     volumes:
       - mariadb-data:/var/lib/mysql
     healthcheck:
@@ -74,6 +82,7 @@ services:
       RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./rabbitmq-consumer-timeout.conf:/etc/rabbitmq/conf.d/99-consumer-timeout.conf:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       <<: *healthcheck-tcp
@@ -290,6 +299,9 @@ services:
     environment:
       <<: *etcd-env
       OTEL_ENABLED: "false"
+      IMPORT_SCHEDULER_DOCKER_SOCK: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       configurator:
         condition: service_completed_successfully
@@ -310,6 +322,9 @@ services:
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
     depends_on:
       configurator:
         condition: service_completed_successfully
@@ -468,6 +483,10 @@ services:
       AUTH_ENDPOINT: http://auth:8905
       VITE_GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       VITE_MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
+      VITE_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      VITE_OIDC_ISSUER: ${OIDC_ISSUER:-}
+      VITE_OIDC_AUTHORIZATION_ENDPOINT: ${OIDC_AUTHORIZATION_ENDPOINT:-}
+      VITE_OIDC_LOGIN_ONLY: ${OIDC_LOGIN_ONLY:-false}
       VITE_GOOGLE_MAP_API_KEY: ${GOOGLE_MAP_API_KEY:-}
     depends_on:
       restapi:
@@ -809,7 +828,7 @@ services:
   resource-discovery-scheduler:
     image: ${COMPANY:-hystax}/resource_discovery:${OPTSCALE_VERSION:-latest}
     <<: *restart
-    entrypoint: ["sh", "-c", "while true; do python3 docker_images/resource_discovery/scheduler.py; sleep 300; done"]
+    entrypoint: ["sh", "-c", "while true; do python3 docker_images/resource_discovery/scheduler.py; sleep 10800; done"]
     environment:
       <<: *etcd-env
     depends_on:

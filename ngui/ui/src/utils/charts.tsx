@@ -140,6 +140,7 @@ export const getMaxAndMinBandValues = (data, keys) => {
 export const addEntityIconToTooltipKey = (text, details, entityName) => {
   const textWithIcon = {
     [EXPENSES_FILTERBY_TYPES.CLOUD]: <CloudLabel type={details.type} label={text} />,
+    [EXPENSES_FILTERBY_TYPES.VENDOR]: <CloudLabel type={details.type} label={text} />,
     [EXPENSES_FILTERBY_TYPES.POOL]: <PoolLabel type={details.purpose} name={text} disableLink />,
   }[entityName];
 

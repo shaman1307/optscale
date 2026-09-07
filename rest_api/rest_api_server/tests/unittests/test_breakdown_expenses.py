@@ -196,7 +196,8 @@ class TestBreakdownExpensesApi(TestApiBase):
     def test_breakdown_by_values(self):
         breakdown_by_values = [
             'employee_id', 'k8s_namespace', 'cloud_account_id', 'service_name',
-            'region', 'resource_type', 'k8s_node', 'pool_id', 'k8s_service']
+            'region', 'resource_type', 'k8s_node', 'pool_id', 'subpool',
+            'k8s_service']
         day_1_ts = int(datetime(2022, 2, 1, tzinfo=timezone.utc).timestamp())
         res1 = self._create_resource(self.cloud_acc1['id'], r_type='type1',
                                      first_seen=day_1_ts, last_seen=day_1_ts)
@@ -219,6 +220,54 @@ class TestBreakdownExpensesApi(TestApiBase):
             self.org_id, day_1_ts, day_1_ts, 'something_strange')
         self.assertEqual(code, 400)
         self.verify_error_code(resp, 'OE0217')
+
+    def test_breakdown_by_subpool_collapses_same_names(self):
+        day_1_ts = int(datetime(2022, 2, 1, tzinfo=timezone.utc).timestamp())
+        _, pool_a = self.client.pool_create(self.org_id, {
+            'name': 'mysql',
+            'parent_id': self.org['pool_id'],
+        })
+        _, pool_b = self.client.pool_create(self.org_id, {
+            'name': 'mysql',
+            'parent_id': self.sub_pool1['id'],
+        })
+        res1 = self._create_resource(
+            self.cloud_acc1['id'], r_type='type1',
+            first_seen=day_1_ts, last_seen=day_1_ts,
+            pool_id=pool_a['id'], employee_id=self.employee1['id'])
+        res2 = self._create_resource(
+            self.cloud_acc2['id'], r_type='type2',
+            first_seen=day_1_ts, last_seen=day_1_ts,
+            pool_id=pool_b['id'], employee_id=self.employee2['id'])
+        self.expenses = [
+            {
+                'cloud_account_id': res1['cloud_account_id'],
+                'resource_id': res1['id'],
+                'date': utcfromtimestamp(day_1_ts),
+                'cost': 10,
+                'sign': 1
+            },
+            {
+                'cloud_account_id': res2['cloud_account_id'],
+                'resource_id': res2['id'],
+                'date': utcfromtimestamp(day_1_ts),
+                'cost': 25,
+                'sign': 1
+            },
+        ]
+        code, response = self.client.breakdown_expenses_get(
+            self.org_id, day_1_ts, day_1_ts, 'subpool')
+        self.assertEqual(code, 200)
+        self.assertEqual(response['breakdown_by'], 'subpool')
+        self.assertEqual(response['total'], 35)
+        self.assertIn('mysql', response['counts'])
+        self.assertEqual(response['counts']['mysql']['total'], 35)
+        self.assertEqual(response['counts']['mysql']['name'], 'mysql')
+        day_breakdown = response['breakdown'][str(day_1_ts)]
+        self.assertEqual(day_breakdown['mysql']['cost'], 35)
+        # Same names must collapse to a single series key.
+        self.assertEqual(
+            len([k for k in day_breakdown.keys() if k == 'mysql']), 1)
 
     def test_previous_period(self):
         day_1 = datetime(2022, 2, 1, tzinfo=timezone.utc)
@@ -404,13 +453,15 @@ class TestBreakdownExpensesApi(TestApiBase):
                     'cost': 10,
                     'id': self.sub_pool1['id'],
                     'name': self.sub_pool1['name'],
-                    'purpose': self.sub_pool1['purpose']
+                    'purpose': self.sub_pool1['purpose'],
+                    'parent_id': self.sub_pool1['parent_id'],
                 },
                 self.sub_pool2['id']: {
                     'cost': 20,
                     'id': self.sub_pool2['id'],
                     'name': self.sub_pool2['name'],
-                    'purpose': self.sub_pool2['purpose']
+                    'purpose': self.sub_pool2['purpose'],
+                    'parent_id': self.sub_pool2['parent_id'],
                 }
             },
             str(day_1_ts - DAY_IN_SECONDS): {
@@ -418,7 +469,8 @@ class TestBreakdownExpensesApi(TestApiBase):
                     'cost': 25,
                     'id': self.sub_pool2['id'],
                     'name': self.sub_pool2['name'],
-                    'purpose': self.sub_pool2['purpose']
+                    'purpose': self.sub_pool2['purpose'],
+                    'parent_id': self.sub_pool2['parent_id'],
                 }
             },
             str(day_1_ts + DAY_IN_SECONDS): {}
@@ -428,12 +480,14 @@ class TestBreakdownExpensesApi(TestApiBase):
             self.sub_pool1['id']: {
                 'total': 10, 'previous_total': 0, 'id': self.sub_pool1['id'],
                 'name': self.sub_pool1['name'],
-                'purpose': self.sub_pool1['purpose']
+                'purpose': self.sub_pool1['purpose'],
+                'parent_id': self.sub_pool1['parent_id'],
             },
             self.sub_pool2['id']: {
                 'total': 45, 'previous_total': 35, 'id': self.sub_pool2['id'],
                 'name': self.sub_pool2['name'],
-                'purpose': self.sub_pool2['purpose']
+                'purpose': self.sub_pool2['purpose'],
+                'parent_id': self.sub_pool2['parent_id'],
             }
         }
         self.assertEqual(resp['counts'], expected_counts)
@@ -967,3 +1021,31 @@ class TestBreakdownExpensesApi(TestApiBase):
             self.org_id, time - 1, time + 1, 'cloud_account_id', filters)
         self.assertEqual(code, 200)
         self.assertEqual(response['total'], 300)
+
+    def test_breakdown_expenses_invoice_month(self):
+        usage_dt = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+        res = self._create_resource(
+            self.cloud_acc1['id'], r_type='type1',
+            first_seen=int(usage_dt.timestamp()),
+            last_seen=int(usage_dt.timestamp()))
+        self.expenses.append({
+            'cloud_account_id': self.cloud_acc1['id'],
+            'resource_id': res['id'],
+            'date': usage_dt.replace(tzinfo=None),
+            'cost': 15,
+            'sign': 1,
+            'invoice_month': '202608',
+        })
+        august_start = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())
+        august_end = int(datetime(2026, 8, 31, tzinfo=timezone.utc).timestamp())
+        code, response = self.client.breakdown_expenses_get(
+            self.org_id, august_start, august_end)
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total'], 0)
+
+        code, response = self.client.breakdown_expenses_get(
+            self.org_id, params={'invoice_months': ['202608']})
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total'], 15)
+        self.assertEqual(response['previous_total'], 0)
+        self.assertEqual(response['invoice_months'], ['202608'])

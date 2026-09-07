@@ -208,6 +208,10 @@ const useGet = ({ withPoolDetails = true, withPoolChildren = true } = {}) => {
   const { organizationPoolId } = useOrganizationInfo();
   const dispatch = useDispatch();
 
+  const getPoolIds = ({ id, children = [] } = {}) => [
+    ...new Set([id, ...(children || []).map(({ id: childId }) => childId)].filter(Boolean)),
+  ];
+
   const {
     apiData: { pool: data = {} },
   } = useApiData(GET_POOL);
@@ -221,22 +225,28 @@ const useGet = ({ withPoolDetails = true, withPoolChildren = true } = {}) => {
 
   const { isLoading: isGetPoolAllowedActionsLoading } = useApiState(GET_POOL_ALLOWED_ACTIONS);
 
+  const poolIds = getPoolIds(data);
+  const poolIdsKey = poolIds.join(",");
+
   useEffect(() => {
     if (shouldInvoke) {
       dispatch((_, getState) => {
         dispatch(getPool(organizationPoolId, withPoolChildren, withPoolDetails)).then(() => {
           if (!isError(GET_POOL, getState())) {
             const { pool = {} } = getState()?.[RESTAPI]?.[GET_POOL] ?? {};
-            const { id, children = [] } = pool;
-
-            const poolIds = [...children.map((child) => child.id), id];
-
-            dispatch(getPoolAllowedActions(poolIds));
+            dispatch(getPoolAllowedActions(getPoolIds(pool)));
           }
         });
       });
+      return;
     }
-  }, [dispatch, shouldInvoke, organizationPoolId, withPoolDetails, withPoolChildren]);
+
+    // Pool payload is cached: still refresh allowed actions (chunked) so MANAGE_POOLS
+    // is present for every pool id, not only the organization root.
+    if (poolIdsKey) {
+      dispatch(getPoolAllowedActions(poolIdsKey.split(",")));
+    }
+  }, [dispatch, shouldInvoke, organizationPoolId, withPoolDetails, withPoolChildren, poolIdsKey]);
 
   return { isLoading, isDataReady, data, isGetPoolAllowedActionsLoading };
 };

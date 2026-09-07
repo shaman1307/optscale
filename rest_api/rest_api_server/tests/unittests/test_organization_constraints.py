@@ -5,8 +5,8 @@ from sqlalchemy import and_
 
 from rest_api.rest_api_server.models.db_base import BaseDB
 from rest_api.rest_api_server.models.db_factory import DBFactory, DBType
-from rest_api.rest_api_server.models.models import (OrganizationConstraintTypes,
-                                                    OrganizationLimitHit)
+from rest_api.rest_api_server.models.models import (
+    CloudAccount, OrganizationConstraintTypes, OrganizationLimitHit)
 from rest_api.rest_api_server.tests.unittests.test_api_base import TestApiBase
 from rest_api.rest_api_server.utils import get_nil_uuid
 import tools.optscale_time as opttime
@@ -115,7 +115,7 @@ class TestOrganizationConstraints(TestApiBase):
         params['filters'].pop('pool_id', None)
         params['filters']['pool'] = [{
             'id': self.pool_id, 'name': self.pool_name,
-            'purpose': 'business_unit'}]
+            'purpose': 'business_unit', 'parent_id': None}]
         params['filters']['region'] = [{
             'name': params['filters']['region'][0],
             'cloud_type': self.cloud_acc['type']}]
@@ -137,7 +137,7 @@ class TestOrganizationConstraints(TestApiBase):
         params['filters'].pop('pool_id', None)
         params['filters']['pool'] = [{
             'id': self.pool_id, 'name': self.pool_name,
-            'purpose': 'business_unit'}]
+            'purpose': 'business_unit', 'parent_id': None}]
         params['filters']['region'] = [{
             'name': params['filters']['region'][0],
             'cloud_type': self.cloud_acc['type']}]
@@ -740,7 +740,8 @@ class TestOrganizationConstraints(TestApiBase):
             'name': 'subpool', 'parent_id': self.pool_id,
         })
         pool_filter = {
-            'id': pool['id'], 'name': pool['name'], 'purpose': pool['purpose']
+            'id': pool['id'], 'name': pool['name'], 'purpose': pool['purpose'],
+            'parent_id': pool['parent_id']
         }
         self.create_cloud_resource(
             self.cloud_acc['id'], name='name_1',
@@ -864,6 +865,34 @@ class TestOrganizationConstraints(TestApiBase):
             code, resp = self.client.organization_constraint_list(p)
             self.assertEqual(code, 404)
             self.assertEqual(resp['error']['error_code'], 'OE0002')
+
+    def test_list_skips_deleted_cloud_account_in_filters(self):
+        cloud_acc2 = {
+            'name': 'cloud_acc2',
+            'type': 'aws_cnr',
+            'config': {
+                'access_key_id': 'key2',
+                'secret_access_key': 'secret2',
+                'config_scheme': 'create_report'
+            }
+        }
+        _, acc2 = self.create_cloud_account(self.org_id, cloud_acc2)
+        constr = self.create_org_constraint(
+            self.org_id, self.pool_id,
+            filters={'cloud_account_id': [self.cloud_acc['id'], acc2['id']]})
+        db = DBFactory(DBType.Test, None).db
+        session = BaseDB.session(db.engine)()
+        session.query(CloudAccount).filter(
+            CloudAccount.id == acc2['id']
+        ).update({CloudAccount.deleted_at: opttime.utcnow_timestamp()})
+        session.commit()
+        code, resp = self.client.organization_constraint_list(self.org_id)
+        self.assertEqual(code, 200)
+        listed = next(
+            c for c in resp['organization_constraints']
+            if c['id'] == constr['id'])
+        ca_ids = [x['id'] for x in listed['filters'].get('cloud_account', [])]
+        self.assertEqual(ca_ids, [self.cloud_acc['id']])
 
     def test_delete(self):
         constr = self.create_org_constraint(self.org_id, self.pool_id)
@@ -1121,12 +1150,40 @@ class TestOrganizationConstraints(TestApiBase):
 
     def test_patch_immutable(self):
         constr = self.create_org_constraint(self.org_id, self.pool_id)
-        params = ['organization_id', 'created_at', 'definition', 'filters']
+        params = ['organization_id', 'created_at', 'type']
         for p in params:
             code, resp = self.client.organization_constraint_update(
                 constr['id'], {p: '123'})
             self.assertEqual(code, 400)
             self.assertEqual(resp['error']['error_code'], 'OE0211')
+
+    def test_patch_definition_and_filters(self):
+        params = self.valid_constraint_params.copy()
+        params['type'] = OrganizationConstraintTypes.TAGGING_POLICY.value
+        params['definition'] = {
+            'start_date': 0,
+            'conditions': {'tag': 'tag1', 'without_tag': 'tag2'},
+        }
+        params['filters'] = {}
+        code, constr = self.client.organization_constraint_create(
+            self.org_id, params)
+        self.assertEqual(code, 201)
+        new_definition = {
+            'start_date': 1,
+            'conditions': {'without_tag': 'CI'},
+        }
+        new_filters = {'cloud_account_id': [self.cloud_acc['id']]}
+        code, resp = self.client.organization_constraint_update(
+            constr['id'], {
+                'definition': new_definition,
+                'filters': new_filters,
+            })
+        self.assertEqual(code, 200)
+        self.assertEqual(resp['definition'], new_definition)
+        self.assertEqual(resp['last_run'], 0)
+        self.assertIn('cloud_account', resp['filters'])
+        self.assertEqual(
+            resp['filters']['cloud_account'][0]['id'], self.cloud_acc['id'])
 
     def test_patch_unexpected(self):
         constr = self.create_org_constraint(self.org_id, self.pool_id)
@@ -1230,3 +1287,27 @@ class TestOrganizationConstraints(TestApiBase):
             self.org_id, params)
         self.assertEqual(code, 201)
         self.assertEqual(resp['filters']['traffic_from'], ['ANY'])
+
+    def test_create_virtual_tag_filter(self):
+        now = opttime.utcnow_timestamp()
+        _, resource = self.create_cloud_resource(
+            self.cloud_acc['id'], name='vt-resource')
+        self.resources_collection.update_one(
+            {'_id': resource['id']},
+            {'$set': {
+                'first_seen': now,
+                'last_seen': now,
+                'active': True,
+                'virtual_tags': [
+                    {'key': 'PRODUCT', 'value': 'SNS', 'share': 100}],
+                'virtual_tags_by_quarter': {
+                    '2026Q3': [{'key': 'PRODUCT', 'value': 'SNS',
+                                'share': 100}],
+                },
+            }})
+        params = self.valid_constraint_params.copy()
+        params['filters'] = {'virtual_tag': ['PRODUCT:SNS']}
+        code, resp = self.client.organization_constraint_create(
+            self.org_id, params)
+        self.assertEqual(code, 201, resp)
+        self.assertEqual(resp['filters']['virtual_tag'], ['PRODUCT:SNS'])

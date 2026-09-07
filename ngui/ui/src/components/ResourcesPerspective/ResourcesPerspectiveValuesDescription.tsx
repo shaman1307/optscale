@@ -4,14 +4,14 @@ import { FILTER_TYPE } from "components/FilterComponents/constants";
 import KeyValueLabel from "components/KeyValueLabel/KeyValueLabel";
 import { FILTER_CONFIGS } from "components/Resources/filterConfigs";
 import SubTitle from "components/SubTitle";
-import { breakdowns } from "hooks/useBreakdownBy";
+import { getBreakdownDisplayName } from "hooks/useBreakdownBy";
 import { isEmptyArray } from "utils/arrays";
 import { SPACING_1 } from "utils/layouts";
 import { isEmptyObject } from "utils/objects";
 
 const getBreakdownByRenderData = (breakdownBy) => ({
   controlName: "categorizeBy",
-  renderValue: () => breakdowns.find((breakdown) => breakdown.value === breakdownBy)?.name ?? null,
+  renderValue: () => getBreakdownDisplayName(breakdownBy) ?? null,
 });
 
 const getGroupByRenderData = (groupBy) => ({

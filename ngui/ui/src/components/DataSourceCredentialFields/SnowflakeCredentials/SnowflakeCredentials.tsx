@@ -8,6 +8,7 @@ export const FIELD_NAMES = Object.freeze({
   PRIVATE_KEY: "privateKey",
   ROLE: "role",
   WAREHOUSE: "warehouse",
+  BACKUP_WAREHOUSE: "backupWarehouse",
   BILLING_SOURCE: "billingSource",
 });
 
@@ -64,6 +65,14 @@ const SnowflakeCredentials = ({ readOnlyFields = [], privateKeyRequired = true }
         }}
         label={<FormattedMessage id="warehouse" />}
         dataTestId="input_snowflake_warehouse"
+      />
+      <TextInput
+        name={FIELD_NAMES.BACKUP_WAREHOUSE}
+        InputProps={{
+          endAdornment: <QuestionMark messageId="snowflakeBackupWarehouseTooltip" dataTestId="qmark_snowflake_backup_wh" />,
+        }}
+        label={<FormattedMessage id="backupWarehouse" />}
+        dataTestId="input_snowflake_backup_warehouse"
       />
       <TextInput
         name={FIELD_NAMES.ROLE}

@@ -103,7 +103,12 @@ class TestExpensesApi(TestApiBase):
             args[3].pop('limit')
         except BaseException:
             pass
-        code, filters = self.client.available_filters_get(*args)
+        filter_params = {}
+        if len(args) > 3 and args[3] is not None:
+            filter_params = dict(args[3])
+        filter_params['facets'] = 'core,tag,meta'
+        code, filters = self.client.available_filters_get(
+            args[0], args[1], args[2], filter_params)
         self.assertEqual(code, 200)
         response.update(filters)
         return code, response
@@ -384,6 +389,98 @@ class TestExpensesApi(TestApiBase):
             'cloud_account_id',
             [self.cloud_acc1['id'], self.cloud_acc2['id'], self.cloud_acc3['id']],
             self.prev_start, self.end_date, group_by='cloud_account_id')
+
+    @patch('rest_api.rest_api_server.controllers.expense.'
+           'ExpenseController.get_expenses')
+    def test_pool_filter_by_vendor(self, p_expenses):
+        # Two AWS accounts should collapse into one vendor row.
+        cloud_acc_aws2 = {
+            'name': 'cloud_acc_aws2',
+            'type': 'aws_cnr',
+            'config': {
+                'access_key_id': 'key2',
+                'secret_access_key': 'secret2',
+                'config_scheme': 'create_report'
+            }
+        }
+        _, aws2 = self.create_cloud_account(
+            self.org_id, cloud_acc_aws2, auth_user_id=self.auth_user_id_1)
+        p_expenses.return_value = [
+            {
+                'cost': 4.0,
+                '_id': {
+                    'date': self.prev_start,
+                    'cloud_account_id': self.cloud_acc1['id'],
+                },
+            },
+            {
+                'cost': 1.0,
+                '_id': {
+                    'date': self.prev_start,
+                    'cloud_account_id': aws2['id'],
+                },
+            },
+            {
+                'cost': 3.3,
+                '_id': {
+                    'date': self.start_date,
+                    'cloud_account_id': self.cloud_acc1['id'],
+                },
+            },
+            {
+                'cost': 0.7,
+                '_id': {
+                    'date': self.second_date,
+                    'cloud_account_id': aws2['id'],
+                },
+            },
+            {
+                'cost': 1.0,
+                '_id': {
+                    'date': self.start_date,
+                    'cloud_account_id': self.cloud_acc2['id'],
+                },
+            },
+            {
+                'cost': 2.0,
+                '_id': {
+                    'date': self.second_date,
+                    'cloud_account_id': self.cloud_acc2['id'],
+                },
+            },
+        ]
+        code, r = self.client.pool_breakdown_expenses_get(
+            self.org['pool_id'], self.start_ts, self.end_ts, filter_by='vendor')
+        self.assertEqual(code, 200)
+        expenses = r['expenses']
+        self.assertEqual(expenses['total'], 7.0)
+        self.assertEqual(expenses['previous_total'], 5.0)
+        vendors = {v['id']: v for v in expenses['vendor']}
+        self.assertEqual(set(vendors), {'aws', 'azure'})
+        self.assertEqual(vendors['aws']['total'], 4.0)
+        self.assertEqual(vendors['aws']['previous_total'], 5.0)
+        self.assertEqual(vendors['aws']['type'], 'aws_cnr')
+        self.assertEqual(
+            set(vendors['aws']['cloud_account_ids']),
+            {self.cloud_acc1['id'], aws2['id']})
+        self.assertEqual(vendors['azure']['total'], 3.0)
+        self.assertEqual(vendors['azure']['previous_total'], 0)
+        self.assertEqual(
+            expenses['breakdown'][str(self.start_ts)],
+            [
+                {
+                    'id': 'aws',
+                    'name': 'AWS',
+                    'type': 'aws_cnr',
+                    'expense': 3.3,
+                },
+                {
+                    'id': 'azure',
+                    'name': 'Azure',
+                    'type': 'azure_cnr',
+                    'expense': 1.0,
+                },
+            ])
 
     @patch('rest_api.rest_api_server.controllers.expense.'
            'ExpenseController.get_expenses')
@@ -4430,10 +4527,13 @@ class TestExpensesApi(TestApiBase):
                 expense['resource_id'], (None, []))
             self.assertEqual(expense['cost'], cost)
             self.assertEqual(expense['saving'], saving)
-            for null_field in ['cloud_console_link', 'cloud_account_id', 'region',
-                               'service_name', 'cloud_account_name',
-                               'cloud_account_type', 'resource_name']:
+            for null_field in ['cloud_console_link', 'region',
+                               'service_name', 'resource_name']:
                 self.assertIsNone(expense.get(null_field))
+            self.assertEqual(expense.get('cloud_account_id'), self.cloud_acc1['id'])
+            self.assertEqual(
+                expense.get('cloud_account_name'), self.cloud_acc1['name'])
+            self.assertIsNotNone(expense.get('cloud_account_type'))
             self.assertFalse(expense['active'])
             self.assertFalse(expense['constraint_violated'])
             self.assertEqual(expense['cost'], cost)
@@ -4485,17 +4585,24 @@ class TestExpensesApi(TestApiBase):
         code, response = self.client.clean_expenses_get(
             self.org_id, time - 100, time + 100, body)
         self.assertEqual(code, 200)
-        self.assertEqual(response['total_cost'], 250)
-        self.assertEqual(response['total_count'], 1)
-        self.assertEqual(len(response.get('clean_expenses', [])), 1)
-        for expense in response['clean_expenses']:
-            self.assertEqual(expense['resource_id'], resource4['id'])
+        self.assertEqual(response['total_cost'], 500)
+        self.assertEqual(response['total_count'], 4)
+        self.assertEqual(len(response.get('clean_expenses', [])), 4)
+        self.assertEqual(
+            {expense['resource_id'] for expense in response['clean_expenses']},
+            {resource1['id'], resource2['id'], resource3['id'], resource4['id']})
+        cost_by_id = {
+            expense['resource_id']: expense['cost']
+            for expense in response['clean_expenses']}
+        self.assertEqual(cost_by_id[resource1['id']], 150)
+        self.assertEqual(cost_by_id[resource3['id']], 100)
+        self.assertEqual(cost_by_id[resource4['id']], 250)
         code, response = self.client.summary_expenses_get(
             self.org_id, time - 100, time + 100, body)
         self.assertEqual(code, 200)
-        self.assertEqual(response['total_cost'], 250)
-        self.assertEqual(response['total_count'], 1)
-        self.assertEqual(response['total_saving'], 0)
+        self.assertEqual(response['total_cost'], 500)
+        self.assertEqual(response['total_count'], 4)
+        self.assertEqual(response['total_saving'], 1165)
 
         self._make_resources_active([resource1['cluster_id']])
         body = {'resource_type': '%s:cluster' % cluster_type['name'],
@@ -4514,20 +4621,33 @@ class TestExpensesApi(TestApiBase):
         self.assertEqual(response['total_count'], 1)
         self.assertEqual(response['total_saving'], 1165)
 
-        for expense_filter in ['region', 'cloud_account_id']:
-            body = {expense_filter: self.nil_uuid}
-            code, response = self.client.clean_expenses_get(
-                self.org_id, time - 100, time + 100, body)
-            self.assertEqual(code, 200)
-            self.assertEqual(response['total_cost'], 550, expense_filter)
-            self.assertEqual(response['total_count'], 2)
+        body = {'region': self.nil_uuid}
+        code, response = self.client.clean_expenses_get(
+            self.org_id, time - 100, time + 100, body)
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total_cost'], 550)
+        self.assertEqual(response['total_count'], 2)
 
-            code, response = self.client.summary_expenses_get(
-                self.org_id, time - 100, time + 100, body)
-            self.assertEqual(code, 200)
-            self.assertEqual(response['total_cost'], 550)
-            self.assertEqual(response['total_count'], 2)
-            self.assertEqual(response['total_saving'], 1165)
+        code, response = self.client.summary_expenses_get(
+            self.org_id, time - 100, time + 100, body)
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total_cost'], 550)
+        self.assertEqual(response['total_count'], 2)
+        self.assertEqual(response['total_saving'], 1165)
+
+        body = {'cloud_account_id': self.nil_uuid}
+        code, response = self.client.clean_expenses_get(
+            self.org_id, time - 100, time + 100, body)
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total_cost'], 0)
+        self.assertEqual(response['total_count'], 0)
+
+        code, response = self.client.summary_expenses_get(
+            self.org_id, time - 100, time + 100, body)
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total_cost'], 0)
+        self.assertEqual(response['total_count'], 0)
+        self.assertEqual(response['total_saving'], 0)
 
         body = {'service_name': [self.nil_uuid]}
         code, response = self.client.clean_expenses_get(
@@ -4664,14 +4784,16 @@ class TestExpensesApi(TestApiBase):
             self.org_id, time - 100, time + 100, body)
         self.assertEqual(code, 200)
         self.assertEqual(response['total_cost'], 0)
-        self.assertEqual(response['total_count'], 0)
-        self.assertTrue(len(response['clean_expenses']) == 0)
+        self.assertEqual(response['total_count'], 1)
+        self.assertEqual(len(response['clean_expenses']), 1)
+        self.assertEqual(
+            response['clean_expenses'][0]['resource_id'], resource2['id'])
 
         code, response = self.client.summary_expenses_get(
             self.org_id, time - 100, time + 100, body)
         self.assertEqual(code, 200)
         self.assertEqual(response['total_cost'], 0)
-        self.assertEqual(response['total_count'], 0)
+        self.assertEqual(response['total_count'], 1)
 
         body = {'active': False, 'cloud_account_id': None}
         code, response = self.client.clean_expenses_get(
@@ -5829,17 +5951,15 @@ class TestExpensesApi(TestApiBase):
         code, response = self.client.available_filters_get(
             self.org_id, time, time + 1)
         self.assertEqual(code, 200)
+        # cloud_type comes from the traffic expense CA, not the resource JOIN.
         for k in [
             {'name': 'from_1', 'cloud_type': 'aws_cnr'},
             {'name': 'from_2', 'cloud_type': 'aws_cnr'},
-            {'name': 'from_2', 'cloud_type': 'azure_cnr'}
         ]:
             self.assertTrue(k in response['filter_values']['traffic_from'])
-        for k in [
-            {'name': 'to_1', 'cloud_type': 'azure_cnr'},
+        self.assertTrue(
             {'name': 'to_1', 'cloud_type': 'aws_cnr'}
-        ]:
-            self.assertTrue(k in response['filter_values']['traffic_to'])
+            in response['filter_values']['traffic_to'])
 
         code, response = self.client.available_filters_get(
             self.org_id, time, time + 1, {'traffic_from': 'from_1:aws_cnr'})
@@ -6127,25 +6247,25 @@ class TestExpensesApi(TestApiBase):
                 'sign': 1
             })
 
-        filters = {'first_seen_lte': time - 1}
+        filters = {'first_seen_lte': time - 1, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
         self.assertEqual(response['filter_values']['tag'], ['tag2'])
 
-        filters = {'first_seen_lte': time + 1}
+        filters = {'first_seen_lte': time + 1, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
         self.assertEqual(len(response['filter_values']['tag']), 2)
 
-        filters = {'first_seen_gte': time - 1}
+        filters = {'first_seen_gte': time - 1, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
         self.assertEqual(len(response['filter_values']['tag']), 2)
 
-        filters = {'first_seen_gte': time}
+        filters = {'first_seen_gte': time, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
@@ -6184,25 +6304,25 @@ class TestExpensesApi(TestApiBase):
                 'sign': 1
             })
 
-        filters = {'last_seen_lte': time}
+        filters = {'last_seen_lte': time, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
         self.assertEqual(response['filter_values']['tag'], ['tag2'])
 
-        filters = {'last_seen_lte': time + 1}
+        filters = {'last_seen_lte': time + 1, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
         self.assertEqual(len(response['filter_values']['tag']), 2)
 
-        filters = {'last_seen_gte': time}
+        filters = {'last_seen_gte': time, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
         self.assertEqual(len(response['filter_values']['tag']), 2)
 
-        filters = {'last_seen_gte': time + 1}
+        filters = {'last_seen_gte': time + 1, 'facets': 'core,tag'}
         code, response = self.client.available_filters_get(
             self.org_id, time - 1, time + 1, filters)
         self.assertEqual(code, 200)
@@ -6281,6 +6401,8 @@ class TestExpensesApi(TestApiBase):
                 self.org_id, time, time + 1, limits)
             self.assertEqual(
                 len(resp['clean_expenses']), len(expected_resources))
+            self.assertEqual(
+                len(resp['clean_expenses']), len(expected_resources))
             resp_ids = list(map(lambda x: x['cloud_resource_id'],
                                 resp['clean_expenses']))
             self.assertListEqual(resp_ids, expected_resources)
@@ -6342,7 +6464,7 @@ class TestExpensesApi(TestApiBase):
             })
 
         code, response = self.client.available_filters_get(
-            self.org_id, time, time + 1)
+            self.org_id, time, time + 1, {'facets': 'meta'})
         self.assertEqual(code, 200)
         meta_values = response['filter_values']['meta']
         self.assertEqual(len(meta_values), 3)
@@ -6367,7 +6489,87 @@ class TestExpensesApi(TestApiBase):
         self.assertEqual(response['total_cost'], 150)
 
         code, response = self.client.available_filters_get(
-            self.org_id, time, time + 1, {'meta': 'link'})
+            self.org_id, time, time + 1, {'meta': 'link', 'facets': 'meta'})
         self.assertEqual(len(response['filter_values']['meta']), 2)
         for x in response['filter_values']['meta']:
             self.assertTrue(x in ['m_1', 'link'])
+
+    def _create_gcp_account(self):
+        gcp_acc = {
+            'name': 'gcp_billing',
+            'type': 'gcp_cnr',
+            'config': {
+                'credentials': {
+                    'type': 'service_account',
+                    'project_id': 'hystax',
+                    'private_key_id': 'redacted',
+                    'private_key': 'redacted',
+                },
+                'billing_data': {
+                    'dataset_name': 'billing_data',
+                    'table_name': 'gcp_billing_export_v1',
+                },
+            }
+        }
+        _, cloud_acc = self.create_cloud_account(
+            self.org_id, gcp_acc, auth_user_id=self.auth_user_id_1)
+        return cloud_acc
+
+    def test_clean_expenses_invoice_months_xor_dates(self):
+        code, response = self.client.clean_expenses_get(
+            self.org_id, self.start_ts, self.end_ts,
+            {'invoice_months': ['202608']})
+        self.assertEqual(code, 400)
+        self.assertEqual(response['error']['error_code'], 'OE0580')
+
+    def test_clean_expenses_invalid_invoice_month(self):
+        code, response = self.client.clean_expenses_get(
+            self.org_id, params={'invoice_months': ['2026-08']})
+        self.assertEqual(code, 400)
+        self.assertEqual(response['error']['error_code'], 'OE0218')
+
+    def test_clean_expenses_invoice_month_includes_late_usage(self):
+        cloud_acc = self._create_gcp_account()
+        usage_dt = datetime(2026, 7, 31, 12, 0)
+        _, resource = self.create_cloud_resource(
+            cloud_acc['id'], employee_id=self.employee1['id'],
+            pool_id=self.org['pool_id'],
+            first_seen=int(usage_dt.timestamp()),
+            last_seen=int(usage_dt.timestamp()))
+        self.expenses.append({
+            'resource_id': resource['id'],
+            'cost': 42.5,
+            'date': usage_dt,
+            'cloud_account_id': cloud_acc['id'],
+            'sign': 1,
+            'invoice_month': '202608',
+        })
+        august_start = int(datetime(2026, 8, 1).timestamp())
+        august_end = int(datetime(2026, 8, 31, 23, 59).timestamp())
+        code, response = self.client.clean_expenses_get(
+            self.org_id, august_start, august_end)
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total_cost'], 0)
+
+        code, response = self.client.clean_expenses_get(
+            self.org_id, params={'invoice_months': ['202608']})
+        self.assertEqual(code, 200)
+        self.assertEqual(response['total_cost'], 42.5)
+        self.assertEqual(response['invoice_months'], ['202608'])
+        self.assertEqual(len(response['clean_expenses']), 1)
+
+        code, filters = self.client.available_filters_get(
+            self.org_id, params={'invoice_months': ['202608'],
+                                 'facets': 'core'})
+        self.assertEqual(code, 200)
+        self.assertNotIn('invoice_month', filters['filter_values'])
+        self.assertNotIn('invoice_months', filters['filter_values'])
+
+        code, months = self.client.invoice_months_get(self.org_id)
+        self.assertEqual(code, 200)
+        self.assertEqual(months['invoice_months'], ['202608'])
+
+        code, summary = self.client.summary_expenses_get(
+            self.org_id, params={'invoice_months': ['202608']})
+        self.assertEqual(code, 200)
+        self.assertEqual(summary['total_cost'], 42.5)

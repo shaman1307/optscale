@@ -233,13 +233,15 @@ class EmployeeController(BaseController, MongoMixin):
         self._create_employee_emails(employee.id)
         return employee
 
-    def get_expenses(self, employee, start_date, end_date, filter_by):
+    def get_expenses(self, employee, start_date, end_date, filter_by,
+                     invoice_months=None):
         controller_map = {
             'cloud': CloudFilteredEmployeeFormattedExpenseController,
             'pool': PoolFilteredEmployeeFormattedExpenseController,
         }
         controller = controller_map.get(filter_by)(self.session, self._config)
-        return controller.get_formatted_expenses(employee, start_date, end_date)
+        return controller.get_formatted_expenses(
+            employee, start_date, end_date, invoice_months=invoice_months)
 
     def get_employee_by_user_and_organization(self, user_id,
                                               organization_id):

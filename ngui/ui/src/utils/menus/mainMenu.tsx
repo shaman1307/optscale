@@ -19,7 +19,7 @@ import mlMetricsMenuItem from "./mlMetricsMenuItem";
 import mlModels from "./mlModelsMenuItem";
 import mlTasks from "./mlTasksMenuItem";
 import pools from "./poolsMenuItem";
-import powerSchedulesMenuItem from "./powerSchedulesMenuItem";
+import virtualTags from "./virtualTagsMenuItem";
 import quotas from "./quotasMenuItem";
 import recommendationsArchive from "./recommendationsArchiveMenuItem";
 import recommendations from "./recommendationsMenuItem";
@@ -32,7 +32,7 @@ import users from "./usersMenuItem";
 export default [
   {
     id: MAIN_MENU_SECTION_IDS.HOME,
-    items: [home, recommendations, resources, pools, environments],
+    items: [home, recommendations, resources, pools, virtualTags, environments],
   },
   {
     id: MAIN_MENU_SECTION_IDS.FINOPS,
@@ -49,7 +49,7 @@ export default [
   {
     id: MAIN_MENU_SECTION_IDS.POLICIES,
     menuSectionTitle: <MainMenuSectionTitle messageId="policies" />,
-    items: [anomalies, quotas, taggingPolicies, resourceLifecycle, powerSchedulesMenuItem],
+    items: [anomalies, quotas, taggingPolicies, resourceLifecycle],
     capability: OPTSCALE_CAPABILITY.FINOPS,
   },
   {

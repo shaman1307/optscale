@@ -18,6 +18,50 @@ import { onSuccessSignIn } from "./handlers";
 
 export const API_URL = getApiUrl("auth");
 
+// Edge/nginx returns 414 when all pool/resource ids are sent in one query string
+// (~200 UUIDs ≈ 8.5KB). Keep chunks safely under common header buffer limits.
+const ALLOWED_ACTIONS_CHUNK_SIZE = 40;
+
+const chunkIds = (ids) => {
+  const list = ids == null ? [] : Array.isArray(ids) ? ids : [ids];
+  const uniqueIds = [...new Set(list.filter(Boolean))];
+  const chunks = [];
+  for (let i = 0; i < uniqueIds.length; i += ALLOWED_ACTIONS_CHUNK_SIZE) {
+    chunks.push(uniqueIds.slice(i, i + ALLOWED_ACTIONS_CHUNK_SIZE));
+  }
+  return chunks;
+};
+
+const getAllowedActionsInChunks =
+  ({ ids, paramKey, label }) =>
+  (dispatch) => {
+    const chunks = chunkIds(ids);
+    if (chunks.length === 0) {
+      return Promise.resolve();
+    }
+
+    // Sequential chunks with allowMultipleRequests: a parallel re-fetch of the same
+    // label would otherwise cancel an in-flight chunk (requestManager cancels by label).
+    return chunks.reduce(
+      (chain, chunk) =>
+        chain.then(() =>
+          dispatch(
+            apiAction({
+              url: `${API_URL}/allowed_actions`,
+              method: "GET",
+              onSuccess: handleSuccess(SET_ALLOWED_ACTIONS),
+              label,
+              hash: hashParams(chunk),
+              params: { [paramKey]: chunk },
+              ttl: 30 * MINUTE,
+              allowMultipleRequests: true,
+            })
+          )
+        ),
+      Promise.resolve()
+    );
+  };
+
 export const getToken = ({ email, password, code }) =>
   apiAction({
     url: `${API_URL}/tokens`,
@@ -60,25 +104,17 @@ export const getUser = (userId) =>
   });
 
 export const getResourceAllowedActions = (params) =>
-  apiAction({
-    url: `${API_URL}/allowed_actions`,
-    method: "GET",
-    onSuccess: handleSuccess(SET_ALLOWED_ACTIONS),
+  getAllowedActionsInChunks({
+    ids: params,
+    paramKey: "cloud_resource",
     label: GET_RESOURCE_ALLOWED_ACTIONS,
-    hash: hashParams(params),
-    params: { cloud_resource: params },
-    ttl: 30 * MINUTE,
   });
 
 export const getPoolAllowedActions = (params) =>
-  apiAction({
-    url: `${API_URL}/allowed_actions`,
-    method: "GET",
-    onSuccess: handleSuccess(SET_ALLOWED_ACTIONS),
+  getAllowedActionsInChunks({
+    ids: params,
+    paramKey: "pool",
     label: GET_POOL_ALLOWED_ACTIONS,
-    hash: hashParams(params),
-    params: { pool: params },
-    ttl: 30 * MINUTE,
   });
 
 export const resetPassword = (email) =>

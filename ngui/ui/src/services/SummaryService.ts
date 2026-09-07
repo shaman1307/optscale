@@ -6,6 +6,7 @@ import { useApiData } from "hooks/useApiData";
 import { useApiState } from "hooks/useApiState";
 import { useInScopeOfPageMockup } from "hooks/useInScopeOfPageMockup";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
+import { isIncompleteBillingPeriod } from "utils/costPeriod";
 import { mapCleanExpensesFilterParamsToApiParams } from "./CleanExpensesService";
 
 const dataMocked = {
@@ -26,7 +27,7 @@ export const useGet = ({ params = {} } = {}) => {
   });
 
   useEffect(() => {
-    if (shouldInvoke && !inScopeOfPageMockup) {
+    if (shouldInvoke && !inScopeOfPageMockup && !isIncompleteBillingPeriod(params)) {
       dispatch(getExpensesSummary(organizationId, mapCleanExpensesFilterParamsToApiParams(params)));
     }
   }, [dispatch, shouldInvoke, params, organizationId, inScopeOfPageMockup]);

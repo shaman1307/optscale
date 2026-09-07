@@ -121,6 +121,7 @@ const ResourceCountBreakdown = ({
   resourceCountBreakdown,
   breakdownByValue,
   onBreakdownByChange,
+  extraBreakdowns = [],
   isLoading = false,
   showTable = false,
 }) => {
@@ -157,6 +158,7 @@ const ResourceCountBreakdown = ({
       <Box display="flex">
         <BreakdownBy
           value={breakdownByValue}
+          extraBreakdowns={extraBreakdowns}
           onChange={(newBreakdown) => {
             setHiddenLines([]);
             onBreakdownByChange(newBreakdown);

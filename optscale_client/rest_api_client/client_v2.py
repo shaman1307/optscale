@@ -186,11 +186,17 @@ class Client(Client_v1):
     def cloud_resource_create_bulk(self, cloud_account_id, params,
                                    behavior='error_existing',
                                    return_resources=False,
-                                   is_report_import=False):
+                                   is_report_import=False,
+                                   invoice_month=None):
         url = self.cloud_resource_bulk_url(cloud_account_id)
-        url += self.query_url(behavior=behavior,
-                              return_resources=return_resources,
-                              is_report_import=is_report_import)
+        query = {
+            'behavior': behavior,
+            'return_resources': return_resources,
+            'is_report_import': is_report_import,
+        }
+        if invoice_month:
+            query['invoice_month'] = invoice_month
+        url += self.query_url(**query)
         return self.post(url, params)
 
     def cloud_resource_get(self, cloud_resource_id, details=False):
@@ -265,6 +271,25 @@ class Client(Client_v1):
             show_completed=show_completed, show_active=show_active))
 
     @staticmethod
+    def report_import_queue_stats_url():
+        return 'report_import_queue_stats'
+
+    def report_import_queue_stats(self):
+        """Unfinished import counts by cloud type (SCHEDULED + IN_PROGRESS)."""
+        return self.get(self.report_import_queue_stats_url())
+
+    @staticmethod
+    def resource_duplicates_url(cloud_account_id):
+        return '%s/resource_duplicates' % Client.cloud_account_url(
+            cloud_account_id)
+
+    def resource_duplicates_list(self, cloud_account_id):
+        return self.get(self.resource_duplicates_url(cloud_account_id))
+
+    def resource_duplicates_refresh(self, cloud_account_id):
+        return self.put(self.resource_duplicates_url(cloud_account_id), {})
+
+    @staticmethod
     def invite_url(id=None):
         url = 'invites'
         if id is not None:
@@ -294,45 +319,54 @@ class Client(Client_v1):
     def pool_breakdown_expenses_url(pool_id):
         return 'pools_expenses/%s' % pool_id
 
-    def pool_breakdown_expenses_get(self, pool_id, start_date, end_date,
-                                    filter_by=None):
+    def pool_breakdown_expenses_get(self, pool_id, start_date=None, end_date=None,
+                                    filter_by=None, invoice_months=None):
         url = self.pool_breakdown_expenses_url(pool_id)
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date,
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if filter_by is not None:
             query_params['filter_by'] = filter_by
+        if invoice_months is not None:
+            query_params['invoice_months'] = invoice_months
         return self.get(url + self.query_url(**query_params))
 
     @staticmethod
     def cloud_expenses_url(cloud_acc_id):
         return 'clouds_expenses/%s' % cloud_acc_id
 
-    def cloud_expenses_get(self, cloud_acc_id, start_date, end_date,
-                           filter_by=None):
+    def cloud_expenses_get(self, cloud_acc_id, start_date=None, end_date=None,
+                           filter_by=None, invoice_months=None):
         url = self.cloud_expenses_url(cloud_acc_id)
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date,
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if filter_by is not None:
             query_params['filter_by'] = filter_by
+        if invoice_months is not None:
+            query_params['invoice_months'] = invoice_months
         return self.get(url + self.query_url(**query_params))
 
     @staticmethod
     def employee_expenses_url(employee_id):
         return 'employees_expenses/%s' % employee_id
 
-    def employee_expenses_get(self, employee_id, start_date, end_date,
-                              filter_by=None):
+    def employee_expenses_get(self, employee_id, start_date=None, end_date=None,
+                              filter_by=None, invoice_months=None):
         url = self.employee_expenses_url(employee_id)
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date,
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if filter_by is not None:
             query_params['filter_by'] = filter_by
+        if invoice_months is not None:
+            query_params['invoice_months'] = invoice_months
         return self.get(url + self.query_url(**query_params))
 
     @staticmethod
@@ -534,12 +568,13 @@ class Client(Client_v1):
     def clean_expenses_url(organization_id):
         return '%s/clean_expenses' % Client.organization_url(organization_id)
 
-    def clean_expenses_get(self, organization_id, start_date, end_date,
+    def clean_expenses_get(self, organization_id, start_date=None, end_date=None,
                            params=None):
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if params:
             query_params.update(params)
         url = self.clean_expenses_url(
@@ -550,12 +585,13 @@ class Client(Client_v1):
     def summary_expenses_url(organization_id):
         return '%s/summary_expenses' % Client.organization_url(organization_id)
 
-    def summary_expenses_get(self, organization_id, start_date, end_date,
+    def summary_expenses_get(self, organization_id, start_date=None, end_date=None,
                              params=None):
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if params:
             query_params.update(params)
         url = self.summary_expenses_url(
@@ -613,6 +649,78 @@ class Client(Client_v1):
 
     def rule_deprioritize(self, rule_id):
         return self.rule_priority_update(rule_id, 'deprioritize')
+
+    @staticmethod
+    def virtual_tags_url(organization_id):
+        return '%s/virtual_tags' % Client.organization_url(organization_id)
+
+    def virtual_tag_list(self, organization_id, **params):
+        return self.get(self.virtual_tags_url(organization_id) + self.query_url(
+            **params))
+
+    def virtual_tag_create(self, organization_id, params):
+        return self.post(self.virtual_tags_url(organization_id), params)
+
+    @staticmethod
+    def virtual_tag_url(virtual_tag_id):
+        return 'virtual_tags/%s' % virtual_tag_id
+
+    def virtual_tag_get(self, virtual_tag_id):
+        return self.get(self.virtual_tag_url(virtual_tag_id))
+
+    def virtual_tag_update(self, virtual_tag_id, params):
+        return self.patch(self.virtual_tag_url(virtual_tag_id), params)
+
+    def virtual_tag_delete(self, virtual_tag_id):
+        return self.delete(self.virtual_tag_url(virtual_tag_id))
+
+    def virtual_tag_value_limits_update(self, virtual_tag_id, params):
+        return self.put(
+            '%s/value_limits' % self.virtual_tag_url(virtual_tag_id), params)
+
+    @staticmethod
+    def virtual_tag_rules_url(organization_id):
+        return '%s/virtual_tag_rules' % Client.organization_url(
+            organization_id)
+
+    def virtual_tag_rule_list(self, organization_id, virtual_tag_id=None):
+        url = self.virtual_tag_rules_url(organization_id)
+        return self.get(url + self.query_url(virtual_tag_id=virtual_tag_id))
+
+    def virtual_tag_rule_create(self, organization_id, params):
+        return self.post(self.virtual_tag_rules_url(organization_id), params)
+
+    @staticmethod
+    def virtual_tag_rule_url(rule_id):
+        return 'virtual_tag_rules/%s' % rule_id
+
+    def virtual_tag_rule_get(self, rule_id):
+        return self.get(self.virtual_tag_rule_url(rule_id))
+
+    def virtual_tag_rule_update(self, rule_id, params):
+        return self.patch(self.virtual_tag_rule_url(rule_id), params)
+
+    def virtual_tag_rule_delete(self, rule_id):
+        return self.delete(self.virtual_tag_rule_url(rule_id))
+
+    def virtual_tag_copy(self, organization_id, params):
+        url = '%s/virtual_tags_copy' % Client.organization_url(organization_id)
+        return self.post(url, params)
+
+    def virtual_tag_resource_options(self, organization_id, **params):
+        url = '%s/virtual_tag_resource_options' % Client.organization_url(
+            organization_id)
+        return self.get(url + self.query_url(**params))
+
+    def virtual_tag_rules_apply(self, organization_id, params=None):
+        url = '%s/virtual_tag_rules_apply' % Client.organization_url(
+            organization_id)
+        return self.post(url, params or {})
+
+    def virtual_tag_rules_apply_status(self, organization_id, quarter=None):
+        url = '%s/virtual_tag_rules_apply' % Client.organization_url(
+            organization_id)
+        return self.get(url + self.query_url(quarter=quarter))
 
     @staticmethod
     def pool_policy_url(pool_id=None, policy_id=None):
@@ -699,12 +807,16 @@ class Client(Client_v1):
     def region_expenses_url(organization_id):
         return 'organizations/%s/region_expenses' % organization_id
 
-    def region_expenses_get(self, organization_id, start_date, end_date):
+    def region_expenses_get(self, organization_id, start_date=None, end_date=None,
+                            invoice_months=None):
         url = self.region_expenses_url(organization_id)
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date,
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
+        if invoice_months is not None:
+            query_params['invoice_months'] = invoice_months
         return self.get(url + self.query_url(**query_params))
 
     @staticmethod
@@ -776,6 +888,15 @@ class Client(Client_v1):
     def live_demo_get(self):
         url = self.live_demo_url()
         return self.get(url, {})
+
+    @staticmethod
+    def sso_login_config_url():
+        return 'sso_login_config'
+
+    def sso_login_config_get(self, include_secret=False):
+        url = self.sso_login_config_url()
+        params = {'include_secret': include_secret} if include_secret else {}
+        return self.get(url, params)
 
     @staticmethod
     def observe_resources_url(organization_id):
@@ -1413,12 +1534,13 @@ class Client(Client_v1):
     def available_filters_url(organization_id):
         return '%s/available_filters' % Client.organization_url(organization_id)
 
-    def available_filters_get(self, organization_id, start_date, end_date,
+    def available_filters_get(self, organization_id, start_date=None, end_date=None,
                               params=None):
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if params:
             query_params.update(params)
         url = self.available_filters_url(
@@ -1426,16 +1548,35 @@ class Client(Client_v1):
         return self.get(url)
 
     @staticmethod
+    def invoice_months_url(organization_id):
+        return '%s/invoice_months' % Client.organization_url(organization_id)
+
+    def invoice_months_get(self, organization_id):
+        url = self.invoice_months_url(organization_id)
+        return self.get(url)
+
+    @staticmethod
+    def import_scheduler_url(organization_id):
+        return '%s/import_scheduler' % Client.organization_url(organization_id)
+
+    def import_scheduler_get(self, organization_id):
+        return self.get(self.import_scheduler_url(organization_id))
+
+    def import_scheduler_update(self, organization_id, params):
+        return self.patch(self.import_scheduler_url(organization_id), params)
+
+    @staticmethod
     def breakdown_expenses_url(organization_id):
         return '%s/breakdown_expenses' % Client.organization_url(
             organization_id)
 
-    def breakdown_expenses_get(self, organization_id, start_date, end_date,
+    def breakdown_expenses_get(self, organization_id, start_date=None, end_date=None,
                                breakdown_by=None, params=None):
-        query_params = {
-            'start_date': start_date,
-            'end_date': end_date
-        }
+        query_params = {}
+        if start_date is not None:
+            query_params['start_date'] = start_date
+        if end_date is not None:
+            query_params['end_date'] = end_date
         if breakdown_by:
             query_params['breakdown_by'] = breakdown_by
         if params:

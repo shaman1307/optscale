@@ -5,6 +5,7 @@ import ResourceCountBreakdown from "components/ResourceCountBreakdown";
 import { useGetExpensesDailyBreakdownQuery, useGetResourceCountBreakdownQuery } from "graphql/__generated__/hooks/restapi";
 import { useBreakdownBy } from "hooks/useBreakdownBy";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
+import { useVirtualTagExtraBreakdowns } from "hooks/useVirtualTagExtraBreakdowns";
 import { mapFiltersToApiParams } from "services/AvailableFiltersService";
 import { DAILY_EXPENSES_BREAKDOWN_BY_PARAMETER_NAME, DAILY_RESOURCE_COUNT_BREAKDOWN_BY_PARAMETER_NAME } from "urls";
 import { reformatBreakdown } from "utils/api";
@@ -14,9 +15,11 @@ import { getResourcesDateRange } from "utils/organizationConstraints/getResource
 
 const ResourceCountBreakdownContainer = ({ constraint }) => {
   const { organizationId } = useOrganizationInfo();
+  const extraBreakdowns = useVirtualTagExtraBreakdowns();
 
   const [{ value: breakdownByValue }, onBreakdownByChange] = useBreakdownBy({
     queryParamName: DAILY_RESOURCE_COUNT_BREAKDOWN_BY_PARAMETER_NAME,
+    extraBreakdowns,
   });
 
   const resourceCountBreakdownRequestParams = useMemo(() => {
@@ -47,6 +50,7 @@ const ResourceCountBreakdownContainer = ({ constraint }) => {
       resourceCountBreakdown={resourceCountBreakdown}
       breakdownByValue={breakdownByValue}
       onBreakdownByChange={onBreakdownByChange}
+      extraBreakdowns={extraBreakdowns}
       isLoading={loading}
     />
   );
@@ -54,9 +58,11 @@ const ResourceCountBreakdownContainer = ({ constraint }) => {
 
 const ExpensesDailyBreakdownByContainer = ({ constraint }) => {
   const { organizationId } = useOrganizationInfo();
+  const extraBreakdowns = useVirtualTagExtraBreakdowns();
 
   const [{ value: breakdownByValue }, onBreakdownByChange] = useBreakdownBy({
     queryParamName: DAILY_EXPENSES_BREAKDOWN_BY_PARAMETER_NAME,
+    extraBreakdowns,
   });
 
   const expensesDailyBreakdownRequestParams = useMemo(() => {
@@ -91,6 +97,7 @@ const ExpensesDailyBreakdownByContainer = ({ constraint }) => {
       counts={expensesDailyBreakdown?.counts ?? {}}
       breakdownByValue={breakdownByValue}
       onBreakdownByChange={onBreakdownByChange}
+      extraBreakdowns={extraBreakdowns}
     />
   );
 };

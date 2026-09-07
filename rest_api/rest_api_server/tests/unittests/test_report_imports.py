@@ -7,7 +7,7 @@ from rest_api.rest_api_server.models.db_base import BaseDB
 from rest_api.rest_api_server.models.models import ReportImport
 from rest_api.rest_api_server.tests.unittests.test_api_base import TestApiBase
 from freezegun import freeze_time
-from tools.optscale_time import utcnow
+from tools.optscale_time import utcnow, utcnow_timestamp
 
 
 class TestReportImportsApi(TestApiBase):
@@ -83,11 +83,14 @@ class TestReportImportsApi(TestApiBase):
         }
         now = utcnow()
         with freeze_time(now):
+            # Compare against utcnow_timestamp(): naive datetime.timestamp()
+            # follows the local TZ and drifts from the UTC epoch we store.
+            expected_updated_at = utcnow_timestamp()
             code, _import = self.client.report_import_update(import_id, update)
         self.assertEqual(code, 200)
         self.assertEqual(_import['state'], ImportStates.FAILED.value)
         self.assertEqual(_import['state_reason'], 'test' * 200)
-        self.assertEqual(_import['updated_at'], int(now.timestamp()))
+        self.assertEqual(_import['updated_at'], expected_updated_at)
 
     def test_report_send_event(self):
         import_id_initial_failed = self._create_import_object()

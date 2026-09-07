@@ -28,6 +28,7 @@ import {
 const getConditions = (conditions = []) =>
   conditions.map((condition) => {
     const {
+      ID,
       TYPE,
       META_INFO,
       TAG_KEY_FIELD_NAME,
@@ -37,9 +38,13 @@ const getConditions = (conditions = []) =>
       REGION_IS_FIELD_NAME,
     } = FIELD_NAMES.CONDITIONS_FIELD_ARRAY;
 
+    // Preserve condition id so PATCH updates/deletes in place instead of only appending
+    const withId = condition.id ? { [ID]: condition.id } : {};
+
     if ([TAG_IS, TAG_VALUE_STARTS_WITH].includes(condition[TYPE])) {
       const { key, value } = JSON.parse(condition[META_INFO]);
       return {
+        ...withId,
         [TYPE]: condition[TYPE],
         [TAG_KEY_FIELD_NAME]: key,
         [TAG_VALUE_FIELD_NAME]: value,
@@ -47,18 +52,21 @@ const getConditions = (conditions = []) =>
     }
     if (condition[TYPE] === CLOUD_IS) {
       return {
+        ...withId,
         [TYPE]: condition[TYPE],
         [CLOUD_IS_FIELD_NAME]: condition[META_INFO],
       };
     }
     if (condition[TYPE] === RESOURCE_TYPE_IS) {
       return {
+        ...withId,
         [TYPE]: condition[TYPE],
         [RESOURCE_TYPE_IS_FIELD_NAME]: condition[META_INFO],
       };
     }
     if (condition[TYPE] === REGION_IS) {
       return {
+        ...withId,
         [TYPE]: condition[TYPE],
         [REGION_IS_FIELD_NAME]: {
           regionName: condition[META_INFO],
@@ -66,6 +74,7 @@ const getConditions = (conditions = []) =>
       };
     }
     return {
+      ...withId,
       [TYPE]: condition[TYPE],
       [META_INFO]: condition[META_INFO],
     };

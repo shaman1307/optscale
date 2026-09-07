@@ -41,18 +41,24 @@ class ExpenseBaseAsyncHandler(BaseAsyncItemHandler, BaseAuthHandler, BaseHandler
             raise OptHTTPError.from_opt_exception(400, ex)
 
     def get_expense_arguments(self, filter_required=True):
+        invoice_months = self.get_arg('invoice_months', str, repeated=True)
         args = {
             'start_date': self.get_arg('start_date', int),
             'end_date': self.get_arg('end_date', int),
             'filter_by': self.get_arg('filter_by', str),
         }
-        for param, value in args.items():
-            if param == 'filter_by' and not filter_required:
-                continue
-            if value is None:
-                raise OptHTTPError(400, Err.OE0216, [param])
-
-        self.check_date_arguments(args)
+        if invoice_months:
+            if (args['start_date'] is not None or
+                    args['end_date'] is not None):
+                raise OptHTTPError(400, Err.OE0580, [])
+            args['invoice_months'] = invoice_months
+        else:
+            for param, value in args.items():
+                if param == 'filter_by' and not filter_required:
+                    continue
+                if value is None:
+                    raise OptHTTPError(400, Err.OE0216, [param])
+            self.check_date_arguments(args)
 
         filter_by = args['filter_by']
         if filter_by and filter_by not in self.FILTERS:
@@ -61,7 +67,7 @@ class ExpenseBaseAsyncHandler(BaseAsyncItemHandler, BaseAuthHandler, BaseHandler
 
 
 class ExpenseAsyncPoolHandler(ExpenseBaseAsyncHandler):
-    FILTERS = ['cloud', 'pool', 'employee']
+    FILTERS = ['cloud', 'pool', 'employee', 'vendor']
 
     def _get_controller_class(self):
         return PoolAsyncController
@@ -92,7 +98,7 @@ class ExpenseAsyncPoolHandler(ExpenseBaseAsyncHandler):
             type: integer
         -   name: filter_by
             in: query
-            description: Filtered By (”cloud” | “pool” | “employee”)
+            description: Filtered By (”cloud” | “pool” | “employee” | “vendor”)
             required: false
             type: string
         responses:
@@ -144,7 +150,7 @@ class ExpenseAsyncPoolHandler(ExpenseBaseAsyncHandler):
                                                         description: "Total value of expenses"}
                                                     purpose: {type: string,
                                                         description: "Pool purpose"}
-                                ”cloud | pool | employee”:
+                                ”cloud | pool | employee | vendor”:
                                     type: array
                                     items:
                                         type: object
@@ -159,6 +165,10 @@ class ExpenseAsyncPoolHandler(ExpenseBaseAsyncHandler):
                                                 description: "Filtered object expense value"}
                                             purpose: {type: string,
                                                 description: "Pool purpose"}
+                                            cloud_account_ids:
+                                                type: array
+                                                description: Cloud account ids for vendor filter
+                                                items: {type: string}
             400:
                 description: |
                     Wrong arguments:
@@ -1952,7 +1962,7 @@ class BreakdownExpensesBaseAsyncHandler(FilteredExpensesBaseAsyncHandler):
         super().__init__(*args, **kwargs)
         self.str_filters.append('breakdown_by')
         self.allowed_breakdowns = {
-            'employee_id', 'pool_id', 'cloud_account_id',
+            'employee_id', 'pool_id', 'subpool', 'cloud_account_id',
             'service_name', 'region', 'resource_type',
             'k8s_node', 'k8s_namespace', 'k8s_service', 'account_locator'
         }
@@ -1961,5 +1971,8 @@ class BreakdownExpensesBaseAsyncHandler(FilteredExpensesBaseAsyncHandler):
         args = super().get_expense_arguments()
         breakdown_by = self.get_arg('breakdown_by', str)
         if breakdown_by and breakdown_by not in self.allowed_breakdowns:
-            raise OptHTTPError(400, Err.OE0217, ['breakdown_by'])
+            from rest_api.rest_api_server.utils import is_virtual_tag_breakdown
+            if not (is_virtual_tag_breakdown(breakdown_by) and
+                    breakdown_by.split(':', 1)[1]):
+                raise OptHTTPError(400, Err.OE0217, ['breakdown_by'])
         return args

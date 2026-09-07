@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useOrganizationPerspectivesQuery } from "graphql/__generated__/hooks/restapi";
-import { validatePerspectiveSchema } from "utils/validation";
+import { validatePerspectiveSchema } from "utils/perspectiveValidation";
 import { useOrganizationInfo } from "../useOrganizationInfo";
 
 const validatePerspectives = (perspectives) => {

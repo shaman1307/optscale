@@ -23,6 +23,10 @@ const envSchema = Object.freeze({
   VITE_FINOPS_IN_PRACTICE_PORTAL_OVERVIEW: oneOf(["enabled", "disabled"], "disabled"),
   VITE_HOTJAR_ID: stringWithDefault(),
   VITE_MICROSOFT_OAUTH_CLIENT_ID: stringWithDefault(),
+  VITE_OIDC_CLIENT_ID: stringWithDefault(),
+  VITE_OIDC_ISSUER: stringWithDefault(),
+  VITE_OIDC_AUTHORIZATION_ENDPOINT: stringWithDefault(),
+  VITE_OIDC_LOGIN_ONLY: oneOf(["true", "false"], "false"),
   VITE_BILLING_INTEGRATION: oneOf(["enabled", "disabled"], "disabled"),
 });
 

@@ -963,6 +963,7 @@ class TestMyTasksApi(TestApiBase):
         for f in ['name', 'type', 'last_run', 'definition']:
             hit[f] = constr[f]
         hit['filters'] = {'pool': [{'id': self.org['pool_id'],
+                                    'parent_id': None,
                                     'purpose': 'business_unit',
                                     'name': self.org['name']}]}
         self.assertDictEqual(

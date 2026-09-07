@@ -10,10 +10,13 @@ export const useGet = (params) => {
   const dispatch = useDispatch();
   const { organizationId } = useOrganizationInfo();
 
-  const { isLoading, shouldInvoke } = useApiState(GET_EXPENSES_DAILY_BREAKDOWN, { organizationId, ...params });
+  const { isLoading, shouldInvoke } = useApiState(GET_EXPENSES_DAILY_BREAKDOWN, {
+    organizationId,
+    ...(params || {}),
+  });
 
   useEffect(() => {
-    if (shouldInvoke) {
+    if (shouldInvoke && params) {
       dispatch(getDailyExpensesBreakdown(organizationId, params));
     }
   }, [dispatch, organizationId, shouldInvoke, params]);

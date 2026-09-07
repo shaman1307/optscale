@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useTheme } from "@mui/material/styles";
 import { useRootData } from "hooks/useRootData";
-import { isCostOverLimit, isForecastOverLimit, hasLimit } from "utils/pools";
+import { hasLimit, isCostOverLimit, isForecastOverLimit, isPoolTypeGroup } from "utils/pools";
 import { EXPANDED_POOL_ROWS } from "../reducer";
 
 const checkPoolAndSubpools = (parent, subPools, isExpanded = false) => {
@@ -38,6 +38,13 @@ const useGetRowStyle = (pools) => {
   const { rootData: expandedPoolIds = [] } = useRootData(EXPANDED_POOL_ROWS);
   const getRowStyle = useCallback(
     (original) => {
+      if (isPoolTypeGroup(original)) {
+        return {
+          ...noAttentionStyle,
+          fontWeight: 600,
+        };
+      }
+
       const { limit, id } = original;
 
       if (!hasLimit(limit)) {

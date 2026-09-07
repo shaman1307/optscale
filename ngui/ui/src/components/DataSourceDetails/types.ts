@@ -9,6 +9,7 @@ import {
   NEBIUS,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   GCP_TENANT,
 } from "utils/constants";
 import {
@@ -32,7 +33,8 @@ type CloudAccountType =
   | typeof KUBERNETES_CNR
   | typeof NEBIUS
   | typeof DATABRICKS
-  | typeof SNOWFLAKE;
+  | typeof SNOWFLAKE
+  | typeof SNOWFLAKE_TENANT;
 
 export type ConfigMap =
   | AlibabaPropertiesProps["config"]
@@ -55,6 +57,7 @@ export type PropertiesMap = {
   [NEBIUS]: FC<NebiusPropertiesProps>;
   [DATABRICKS]: FC<DatabricksPropertiesProps>;
   [SNOWFLAKE]: FC<SnowflakePropertiesProps>;
+  [SNOWFLAKE_TENANT]: FC<SnowflakePropertiesProps>;
 };
 
 export type DataSourceDetailsProps = {
@@ -64,4 +67,6 @@ export type DataSourceDetailsProps = {
   createdAt: number;
   type: CloudAccountType;
   config: ConfigMap;
+  /** UI-only AWS root row (no API entity). */
+  isSynthetic?: boolean;
 };

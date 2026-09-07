@@ -18,6 +18,10 @@ import DataSourceBillingReimportModal from "./DataSourceBillingReimportModal";
 import DeleteAssignmentRuleModal from "./DeleteAssignmentRuleModal";
 import DeleteBIExportModal from "./DeleteBIExportModal";
 import DeleteClusterTypeModal from "./DeleteClusterTypeModal";
+import DeleteVirtualTagModal from "./DeleteVirtualTagModal";
+import DeleteVirtualTagRuleModal from "./DeleteVirtualTagRuleModal";
+import ReapplyVirtualTagsModal from "./ReapplyVirtualTagsModal";
+import CopyVirtualTagsModal from "./CopyVirtualTagsModal";
 import DeleteEmployeeModal from "./DeleteEmployeeModal";
 import DeleteEnvironmentBookingModal from "./DeleteEnvironmentBookingModal";
 import DeleteEnvironmentModal from "./DeleteEnvironmentModal";
@@ -57,6 +61,7 @@ import ReleaseEnvironmentModal from "./ReleaseEnvironmentModal";
 import RemoveInstancesFromScheduleModal from "./RemoveInstancesFromScheduleModal";
 import RenameDataSourceModal from "./RenameDataSourceModal";
 import RenameMlRunChartModal from "./RenameMlRunChartModal";
+import ResourceDuplicatesModal from "./ResourceDuplicatesModal";
 import S3DuplicateFinderSettingsModal from "./S3DuplicateFinderSettingsModal";
 import SaveMlChartsDashboard from "./SaveMlChartsDashboard";
 import SelectedBucketsInfoModal from "./SelectedBucketsInfoModal";
@@ -64,9 +69,9 @@ import SelectStageOrMilestoneModal from "./SelectStageOrMilestoneModal";
 import ShareRunLinkModal from "./ShareRunLinkModal";
 import ShareSettingsModal from "./ShareSettingsModal";
 import SlackIntegrationModal from "./SlackIntegrationModal";
+import ToggleImportSchedulerModal from "./ToggleImportSchedulerModal";
 import UnmarkEnvironmentModal from "./UnmarkEnvironmentModal";
 import UpdateCostModelModal from "./UpdateCostModelModal";
-import UpdateSnowflakeCostModelModal from "./UpdateSnowflakeCostModelModal";
 import UpdateDataSourceCredentialsModal from "./UpdateDataSourceCredentialsModal";
 import UpdateDataSourceSkuModal from "./UpdateDataSourceSkuModal";
 
@@ -85,7 +90,6 @@ export {
   SlackIntegrationModal,
   DisconnectCloudAccountModal,
   UpdateCostModelModal,
-  UpdateSnowflakeCostModelModal,
   DeletePoolModal,
   ShareSettingsModal,
   BookEnvironmentModal,
@@ -96,6 +100,10 @@ export {
   DeleteWebhookModal,
   DeleteClusterTypeModal,
   ReapplyClusterTypesModal,
+  DeleteVirtualTagModal,
+  DeleteVirtualTagRuleModal,
+  ReapplyVirtualTagsModal,
+  CopyVirtualTagsModal,
   DeleteGlobalResourceConstraintModal,
   DeleteSshKeyModal,
   DeleteOrganizationConstraintModal,
@@ -116,6 +124,7 @@ export {
   SelectedBucketsInfoModal,
   S3DuplicateFinderSettingsModal,
   BucketDuplicatesModal,
+  ResourceDuplicatesModal,
   AddPoolModal,
   PoolModal,
   UpdateDataSourceSkuModal,
@@ -140,6 +149,7 @@ export {
   EditModelVersionTagsModal,
   MlDeleteArtifactModal,
   DataSourceBillingReimportModal,
+  ToggleImportSchedulerModal,
   ShareRunLinkModal,
   AwsAssumedRoleCredentialsModal,
 };

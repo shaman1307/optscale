@@ -4,9 +4,11 @@ import { Link as RouterLink } from "react-router-dom";
 import ActionBar from "components/ActionBar";
 import { EXPENSES, EXPENSES_BY_CLOUD, EXPENSES_BY_OWNER, EXPENSES_BY_POOL } from "urls";
 import { COST_EXPLORER, CLOUD_DETAILS, OWNER_DETAILS, POOL_DETAILS, EXPENSES_FILTERBY_TYPES } from "utils/constants";
+import { isVirtualTagBreakdown } from "utils/virtualTagBreakdown";
 
 const ENTITY_TYPES = Object.freeze({
   CLOUD: "cloud",
+  VENDOR: "vendor",
   OWNER: "owner",
   POOL: "pool",
 });
@@ -22,6 +24,7 @@ const getEntityTypeByFilter = (filterBy) =>
   ({
     [EXPENSES_FILTERBY_TYPES.EMPLOYEE]: ENTITY_TYPES.OWNER,
     [EXPENSES_FILTERBY_TYPES.CLOUD]: ENTITY_TYPES.CLOUD,
+    [EXPENSES_FILTERBY_TYPES.VENDOR]: ENTITY_TYPES.VENDOR,
     [EXPENSES_FILTERBY_TYPES.POOL]: ENTITY_TYPES.POOL,
   })[filterBy];
 
@@ -49,6 +52,16 @@ const ExpensesBreakdownActionBar = ({ expensesBreakdownType, filterBy, name, isL
 
   const getActionBarDefinitions = () => {
     if (isCostExplorerBreakdown) {
+      if (isVirtualTagBreakdown(filterBy)) {
+        return {
+          titleText: <FormattedMessage id="expensesBreakdownByVirtualTagTitle" values={{ name }} />,
+          breadcrumbs: [
+            <Link key={1} to={EXPENSES} component={RouterLink}>
+              <FormattedMessage id="costExplorerTitle" />
+            </Link>,
+          ],
+        };
+      }
       const entityType = getEntityTypeByFilter(filterBy);
       const title = getCostExplorerExpensesBreakdownTitle(entityType);
 

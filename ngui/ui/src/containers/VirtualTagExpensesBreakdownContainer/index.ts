@@ -1,0 +1,3 @@
+import VirtualTagExpensesBreakdownContainer from "./VirtualTagExpensesBreakdownContainer";
+
+export default VirtualTagExpensesBreakdownContainer;

@@ -10,6 +10,8 @@ class K8sRightsizingMenuItem extends BaseMenuItem {
   dataTestId = "btn_k8s_rightsizing";
 
   icon = ViewInArOutlinedIcon;
+
+  requiresKubernetes = true;
 }
 
 export default new K8sRightsizingMenuItem();

@@ -22,7 +22,7 @@ from rest_api.rest_api_server.models.enums import (
     AssignmentRequestStatuses, ThresholdBasedTypes, ThresholdTypes,
     ConstraintTypes, PoolPurposes, ConstraintLimitStates,
     OrganizationConstraintTypes, BIOrganizationStatuses, BITypes,
-    GeminiStatuses, RuleOperators)
+    GeminiStatuses, RuleOperators, VirtualTagModes)
 from rest_api.rest_api_server.models.types import (
     Email, Name, Uuid, NullableUuid, NullableMetadata, Int,
     NullableString, AutogenUuid, NullableBool, NullableText, NullableInt,
@@ -36,7 +36,8 @@ from rest_api.rest_api_server.models.types import (
     ConstraintLimitState, OrganizationConstraintType, ConstraintDefinition,
     RunResult, BIOrganizationStatus, BIType, Float, GeminiStatus,
     HMTimeString, TimezoneString, PowerScheduleAction,
-    NullableMediumJSON, NullableMediumText, SerializableNullableJSON
+    NullableMediumJSON, NullableMediumText, SerializableNullableJSON,
+    VirtualTagMode
 )
 
 
@@ -1396,9 +1397,9 @@ class OrganizationConstraint(Base, CreatedMixin, ImmutableMixin, ValidatorMixin)
                   default=OrganizationConstraintTypes.EXPENSE_ANOMALY,
                   nullable=False, info=ColumnPermissions.create_only)
     definition = Column(ConstraintDefinition('definition'), nullable=False,
-                        info=ColumnPermissions.create_only)
+                        info=ColumnPermissions.full)
     filters = Column(ConstraintDefinition('filters'), nullable=False,
-                     info=ColumnPermissions.create_only)
+                     info=ColumnPermissions.full)
     last_run = Column(NullableInt('last_run'), default=0,
                       nullable=False, info=ColumnPermissions.update_only)
     last_run_result = Column(RunResult('last_run_result'),
@@ -1867,3 +1868,206 @@ class Tag(Base, CreatedMixin, MutableMixin, ValidatorMixin):
     @validates("type_id", "resource_id", "name", "value")
     def _validate(self, key, value):
         return self.get_validator(key, value)
+
+
+class VirtualTag(Base, CreatedMixin, MutableMixin, ValidatorMixin):
+    __tablename__ = 'virtual_tag'
+
+    organization_id = Column(
+        Uuid('organization_id'), ForeignKey('organization.id'),
+        info=ColumnPermissions.create_only, nullable=False)
+    organization = relationship('Organization', foreign_keys=[organization_id])
+    key = Column(NotWhiteSpaceString('key'), nullable=False,
+                 info=ColumnPermissions.full)
+    name = Column(Name, nullable=False, info=ColumnPermissions.full)
+    mode = Column(VirtualTagMode('mode'), nullable=False,
+                  default=VirtualTagModes.ASSIGNMENT,
+                  info=ColumnPermissions.full)
+    source_tag_key = Column(NullableString('source_tag_key'), nullable=True,
+                            info=ColumnPermissions.full)
+    quarter = Column(NotWhiteSpaceString('quarter'), nullable=False,
+                     info=ColumnPermissions.create_only)
+    rules = relationship('VirtualTagRule')
+    value_limits = relationship('VirtualTagValueLimit')
+
+    __table_args__ = (
+        UniqueConstraint(
+            'key', 'quarter', 'deleted_at', 'organization_id',
+            name='uc_virtual_tag_key_q_del_at_org_id'),
+        UniqueConstraint(
+            'name', 'quarter', 'deleted_at', 'organization_id',
+            name='uc_virtual_tag_name_q_del_at_org_id'),
+    )
+
+    def to_dict(self, raw=False):
+        result = super().to_dict()
+        mode = result.get('mode')
+        result['mode'] = mode.value if hasattr(mode, 'value') else mode
+        if not raw:
+            result.pop('deleted_at', None)
+        return result
+
+    @validates('organization_id', 'key', 'name', 'mode', 'source_tag_key',
+               'quarter')
+    def _validate(self, key, value):
+        return self.get_validator(key, value)
+
+
+class VirtualTagRule(Base, CreatedMixin, MutableMixin, ValidatorMixin):
+    __tablename__ = 'virtual_tag_rule'
+
+    organization_id = Column(
+        Uuid('organization_id'), ForeignKey('organization.id'),
+        info=ColumnPermissions.create_only, nullable=False)
+    virtual_tag_id = Column(
+        Uuid('virtual_tag_id'), ForeignKey('virtual_tag.id'),
+        info=ColumnPermissions.create_only, nullable=False)
+    name = Column(Name, nullable=False, info=ColumnPermissions.full)
+    priority = Column(Integer, nullable=False, info=ColumnPermissions.full)
+    active = Column(Boolean, nullable=False, default=True,
+                    info=ColumnPermissions.full)
+    creator_id = Column(
+        NullableUuid('creator_id'), ForeignKey('employee.id'),
+        info=ColumnPermissions.create_only, nullable=True)
+    updated_at = Column(Integer, nullable=False, default=0,
+                        info=ColumnPermissions.update_only)
+    last_applied_at = Column(Integer, nullable=False, default=0,
+                             info=ColumnPermissions.update_only)
+    overlap_rule_ids = Column(BaseText, nullable=True,
+                              info=ColumnPermissions.update_only)
+    virtual_tag = relationship('VirtualTag', foreign_keys=[virtual_tag_id])
+    branches = relationship('VirtualTagRuleBranch')
+
+    __table_args__ = (
+        UniqueConstraint(
+            'name', 'deleted_at', 'virtual_tag_id',
+            name='uc_virtual_tag_rule_name_del_at_vt_id'),
+        UniqueConstraint(
+            'priority', 'deleted_at', 'virtual_tag_id',
+            name='uc_virtual_tag_rule_priority_del_at_vt_id'),
+    )
+
+    def to_dict(self, raw=False):
+        result = super().to_dict()
+        overlap = []
+        raw_overlap = result.get('overlap_rule_ids')
+        if raw_overlap:
+            if isinstance(raw_overlap, list):
+                overlap = [str(item) for item in raw_overlap]
+            else:
+                try:
+                    parsed = json.loads(raw_overlap)
+                    if isinstance(parsed, list):
+                        overlap = [str(item) for item in parsed]
+                except (TypeError, ValueError):
+                    overlap = []
+        result['overlap_rule_ids'] = overlap
+        result['needs_apply'] = (
+            (result.get('updated_at') or 0) > (result.get('last_applied_at') or 0))
+        if not raw:
+            result.pop('deleted_at', None)
+            result['branches'] = [
+                branch.to_dict() for branch in self.branches
+                if not branch.deleted]
+        return result
+
+    @validates('organization_id', 'virtual_tag_id', 'name')
+    def _validate(self, key, value):
+        return self.get_validator(key, value)
+
+
+class VirtualTagRuleBranch(Base, CreatedMixin, MutableMixin, ValidatorMixin):
+    __tablename__ = 'virtual_tag_rule_branch'
+
+    rule_id = Column(
+        Uuid('rule_id'), ForeignKey('virtual_tag_rule.id'),
+        info=ColumnPermissions.create_only, nullable=False)
+    priority = Column(Integer, nullable=False, default=1,
+                      info=ColumnPermissions.full)
+    rule = relationship('VirtualTagRule', foreign_keys=[rule_id])
+    conditions = relationship('VirtualTagRuleCondition')
+    allocations = relationship('VirtualTagRuleAllocation')
+
+    def to_dict(self, raw=False):
+        result = super().to_dict()
+        if not raw:
+            result.pop('deleted_at', None)
+            result.pop('rule_id', None)
+            result['conditions'] = [
+                cond.to_dict() for cond in self.conditions
+                if not cond.deleted]
+            result['allocations'] = [
+                alloc.to_dict() for alloc in self.allocations
+                if not alloc.deleted]
+        return result
+
+
+class VirtualTagRuleCondition(Base, CreatedMixin, ImmutableMixin):
+    __tablename__ = 'virtual_tag_rule_condition'
+
+    type = Column(ConditionType, nullable=False,
+                  info=ColumnPermissions.create_only)
+    branch_id = Column(
+        Uuid('branch_id'), ForeignKey('virtual_tag_rule_branch.id'),
+        nullable=False, info=ColumnPermissions.full)
+    meta_info = Column(BaseString, nullable=True, info=ColumnPermissions.full)
+
+    def to_dict(self, raw=False):
+        result = super().to_dict()
+        cond_type = result.get('type')
+        result['type'] = (
+            cond_type.value if hasattr(cond_type, 'value') else cond_type)
+        if not raw:
+            for key in ('created_at', 'deleted_at', 'branch_id'):
+                result.pop(key, None)
+        return result
+
+
+class VirtualTagRuleAllocation(Base, CreatedMixin, MutableMixin, ValidatorMixin):
+    __tablename__ = 'virtual_tag_rule_allocation'
+
+    branch_id = Column(
+        Uuid('branch_id'), ForeignKey('virtual_tag_rule_branch.id'),
+        nullable=False, info=ColumnPermissions.create_only)
+    value = Column(NotWhiteSpaceString('value'), nullable=False,
+                   info=ColumnPermissions.full)
+    share = Column(Int('share'), nullable=False, info=ColumnPermissions.full)
+
+    def to_dict(self, raw=False):
+        result = super().to_dict()
+        if not raw:
+            for key in ('created_at', 'deleted_at', 'branch_id'):
+                result.pop(key, None)
+        return result
+
+    @validates('value', 'share')
+    def _validate(self, key, value):
+        return self.get_validator(key, value)
+
+
+class VirtualTagValueLimit(Base, CreatedMixin, MutableMixin, ValidatorMixin):
+    __tablename__ = 'virtual_tag_value_limit'
+
+    virtual_tag_id = Column(
+        Uuid('virtual_tag_id'), ForeignKey('virtual_tag.id'),
+        nullable=False, info=ColumnPermissions.create_only)
+    value = Column(NotWhiteSpaceString('value'), nullable=False,
+                   info=ColumnPermissions.create_only)
+    limit = Column(Int('limit'), nullable=False, info=ColumnPermissions.full)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'virtual_tag_id', 'value', 'deleted_at',
+            name='uc_virtual_tag_value_limit_vt_value_del'),
+    )
+
+    def to_dict(self, raw=False):
+        result = super().to_dict()
+        if not raw:
+            result.pop('deleted_at', None)
+        return result
+
+    @validates('virtual_tag_id', 'value', 'limit')
+    def _validate(self, key, value):
+        return self.get_validator(key, value)
+

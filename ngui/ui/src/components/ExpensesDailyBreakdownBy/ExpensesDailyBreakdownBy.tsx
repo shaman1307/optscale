@@ -33,6 +33,7 @@ type ExpensesDailyBreakdownByProps = {
   breakdownByValue: string;
   onBreakdownByChange: () => void;
   isLoading: boolean;
+  extraBreakdowns?: { value: string; name: string }[];
 };
 
 const ExpensesDailyBreakdownBy = ({
@@ -41,6 +42,7 @@ const ExpensesDailyBreakdownBy = ({
   breakdownByValue,
   onBreakdownByChange,
   isLoading = false,
+  extraBreakdowns = [],
 }: ExpensesDailyBreakdownByProps) => {
   const chartWrapperRef: RefObject<HTMLElement | null> = useRef(null);
 
@@ -60,7 +62,7 @@ const ExpensesDailyBreakdownBy = ({
     <Stack spacing={SPACING_1}>
       <Box display="flex" alignItems="center" justifyContent="space-between">
         <Box display="flex" gap={1}>
-          <BreakdownBy value={breakdownByValue} onChange={onBreakdownByChange} />
+          <BreakdownBy value={breakdownByValue} onChange={onBreakdownByChange} extraBreakdowns={extraBreakdowns} />
           <Selector id="expenses-split-selector" labelMessageId="expenses" value={split} onChange={setSplit}>
             {SPLITS.map((splitValue) => (
               <Item key={splitValue} value={splitValue}>

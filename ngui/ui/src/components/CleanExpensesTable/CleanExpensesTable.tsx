@@ -21,7 +21,7 @@ import { useOrganizationInfo } from "hooks/useOrganizationInfo";
 import { intl } from "translations/react-intl-config";
 import { getCreateAssignmentRuleUrl } from "urls";
 import { isEmptyArray } from "utils/arrays";
-import { resourcePoolOwner, tags } from "utils/columns";
+import { resourcePoolOwner, tags, virtualTags } from "utils/columns";
 import { CLEAN_EXPENSES_TABLE_QUERY_PARAM_PREFIX, DOWNLOAD_FILE_FORMATS } from "utils/constants";
 import { MetadataNodes } from "utils/metadata";
 import { CELL_EMPTY_VALUE, RESOURCE_ID_COLUMN_CELL_STYLE } from "utils/tables";
@@ -200,15 +200,14 @@ const CleanExpensesTable = ({
       {
         header: (
           <TextWithDataTestId dataTestId="lbl_account_locator">
-            <FormattedMessage id="accountLocator" />
+            <FormattedMessage id="sfAccount" />
           </TextWithDataTestId>
         ),
         accessorKey: "account_locator",
-        accessorFn: (row) =>
-          [row.account_name || row.meta?.account_name, row.account_locator].filter(Boolean).join(" "),
+        accessorFn: (row) => [row.account_name || row.meta?.account_name, row.account_locator].filter(Boolean).join(" "),
         columnSelector: {
           accessor: "account_locator",
-          messageId: "accountLocator",
+          messageId: "sfAccount",
           dataTestId: "btn_toggle_column_account_locator",
         },
         cell: ({
@@ -289,6 +288,13 @@ const CleanExpensesTable = ({
           accessor: "tags",
           messageId: "tags",
           dataTestId: "btn_toggle_column_tags",
+        },
+      }),
+      virtualTags({
+        columnSelector: {
+          accessor: "virtual_tags",
+          messageId: "virtualTags",
+          dataTestId: "btn_toggle_column_virtual_tags",
         },
       }),
     ],
@@ -399,6 +405,7 @@ const CleanExpensesTable = ({
       getRowId={(row) => row.resource_id}
       withSearch
       columnsSelectorUID={disableColumnsSelection ? "" : "cleanExpensesTable"}
+      defaultHiddenColumns={disableColumnsSelection ? undefined : ["traffic_expenses", "metadataString"]}
       localization={{ emptyMessageId: "noResources" }}
       queryParamPrefix={CLEAN_EXPENSES_TABLE_QUERY_PARAM_PREFIX}
       counters={

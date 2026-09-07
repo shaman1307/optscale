@@ -7,7 +7,10 @@ import Input from "components/Input";
 import AvailableFiltersService from "services/AvailableFiltersService";
 import { TAG_KEY_MAX_SIZE } from "utils/constants";
 import { SPACING_1 } from "utils/layouts";
-import { CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES } from "../constants";
+import {
+  CREATE_ORGANIZATION_CONSTRAINT_AVAILABLE_FILTERS_FACETS,
+  CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES,
+} from "../constants";
 import { filtersRangeFunction } from "./Filters";
 
 const FIELD_NAME_BAR = CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TAGS_BAR;
@@ -102,6 +105,7 @@ const TagsInputs = () => {
     return {
       startDate,
       endDate,
+      facets: CREATE_ORGANIZATION_CONSTRAINT_AVAILABLE_FILTERS_FACETS,
     };
   }, []);
   const {

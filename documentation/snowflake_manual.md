@@ -2,18 +2,18 @@
 
 How to connect Snowflake to OptScale, choose billing source, set cost model, and verify imports.
 
-## Architecture (two data sources)
+## Architecture
 
-Snowflake billing in OptScale uses **two** `cloud_type=snowflake` sources when you need both org-wide costs and account-level AI:
+Snowflake billing in OptScale uses:
 
-| Data source | `billing_source` | What it imports |
+| Data source | `cloud_type` / `billing_source` | What it imports |
 |-------------|------------------|-----------------|
-| Organization admin account | `organization_usage` | Warehouse compute, storage, stage, Snowpipe, auto-clustering, remaining serverless (`METERING_DAILY` **including AI aggregates** such as `SNOWFLAKE_COCO_*` / `AI_FUNCTIONS`), data transfer, marketplace, currency adjustments, listing auto-fulfillment |
-| Member / prod account (optional) | `account_usage` | **Detailed** Cortex / Intelligence (model, tokens, …), reader warehouses, listing consumption analytics |
+| Organization (tenant) | `snowflake_tenant` + `organization_usage` | Org-wide usage; member accounts appear as child `snowflake` data sources (including the connect account). Import runs once on the tenant; expenses are written to children by `account_locator`. Costs use `SNOWFLAKE.ORGANIZATION_USAGE.RATE_SHEET_DAILY` (credits × effective_rate; warehouse compute/cloud dual-rate). |
+| Member / prod (optional peer) | `snowflake` + `account_usage` | Detailed Cortex / Intelligence for that account only |
 
-**Recommended billing view:** use the **organization** (`organization_usage`) data source for org totals, including AI. Member `account_usage` sources are for Cortex **detail** only — do **not** sum ADMIN + PROD AI in Cost Explorer (same credits appear twice).
+**Recommended:** connect **Organization usage** (creates `snowflake_tenant`). Member `account_usage` peers are for Cortex **detail** only — do **not** sum ADMIN + PROD AI in Cost Explorer.
 
-Shared non-AI usage (warehouse, storage, …) stays only on `organization_usage`. Member sources must not re-import those.
+Tenant UI: Details shows Child data sources; Advanced is on each child. Root row cost is the sum of children (same pattern as GCP tenant).
 
 ## Prerequisites (Snowflake)
 
@@ -38,11 +38,8 @@ GRANT USAGE ON WAREHOUSE INFRASTRUCTURE_TEST_WH TO ROLE ACCOUNTADMIN;
 3. Select **Billing source**:
    - Organization usage — org billing.
    - Account usage — AI + account-only views.
-4. After create, open **Cost model** and set:
-   - `credit_price` (contractual $ / credit),
-   - `storage_price_per_tb_month` (default often ~23).
 
-Import period is the same scheduler cadence as other sources (typically 6h). First import looks back ~90 days; later runs rewind ~2 days for late-arriving rows.
+Import period is the same scheduler cadence as other sources (typically 6h). First import looks back ~90 days; later runs rewind ~2 days for late-arriving rows. Costs are priced from Snowflake `RATE_SHEET_DAILY` (no OptScale credit/storage price form).
 
 ### Reimport behavior
 

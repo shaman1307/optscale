@@ -232,7 +232,8 @@ class SkuBasedCostModelController(CostModelController, MongoMixin):
 
     @property
     def related_cloud_types(self):
-        return {CloudTypes.DATABRICKS, CloudTypes.SNOWFLAKE}
+        return {CloudTypes.DATABRICKS, CloudTypes.SNOWFLAKE,
+                CloudTypes.SNOWFLAKE_TENANT}
 
     def _get_validation_map(self):
         return {}

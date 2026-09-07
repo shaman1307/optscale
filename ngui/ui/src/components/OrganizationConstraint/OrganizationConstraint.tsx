@@ -19,6 +19,7 @@ import EditOrganizationConstraintNameFormContainer from "containers/EditOrganiza
 import { useIsAllowed } from "hooks/useAllowedActions";
 import { useOpenSideModal } from "hooks/useOpenSideModal";
 import { useOrganizationActionRestrictions } from "hooks/useOrganizationActionRestrictions";
+import { getEditTaggingPolicyUrl } from "urls";
 import {
   ANOMALY_TYPES,
   EXPIRING_BUDGET_POLICY,
@@ -181,6 +182,16 @@ const OrganizationConstraint = ({
           const link = getResourcesLink(constraint);
           navigate(link);
         },
+      },
+      {
+        key: "edit",
+        icon: <EditOutlinedIcon fontSize="small" />,
+        messageId: "edit",
+        type: "button",
+        isLoading: isGetConstraintLoading,
+        show: isAllowed && !!TAGGING_POLICY_TYPES[type],
+        dataTestId: "btn_edit",
+        action: () => navigate(getEditTaggingPolicyUrl(id)),
       },
       {
         key: "delete",

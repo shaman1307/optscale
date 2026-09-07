@@ -434,8 +434,8 @@ class TestShareableResourcesApi(TestApiBase):
             self.organization_id)
         self.assertEqual(code, 200)
         returned_cluster = response['data'][0]
-        self.assertIsNone(returned_cluster.get('cloud_account_name'))
-        self.assertIsNone(returned_cluster.get('cloud_account_type'))
+        self.assertIsNotNone(returned_cluster.get('cloud_account_name'))
+        self.assertIsNotNone(returned_cluster.get('cloud_account_type'))
         self.assertEqual(returned_cluster.get('pool_name'),
                          self.organization['name'])
         self.assertEqual(returned_cluster.get('pool_purpose'),

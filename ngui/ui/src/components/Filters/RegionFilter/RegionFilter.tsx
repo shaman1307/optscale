@@ -1,8 +1,8 @@
 import { FormattedMessage } from "react-intl";
 import CloudLabel from "components/CloudLabel";
 import { intl } from "translations/react-intl-config";
-import { sortObjects } from "utils/arrays";
 import { CLOUD_ACCOUNT_TYPES_LIST, REGION_BE_FILTER, REGION_FILTER } from "utils/constants";
+import { compareDataSourceVendors, getDataSourceVendor } from "utils/dataSourceVendors";
 import Filter from "../Filter";
 
 class RegionFilter extends Filter {
@@ -37,14 +37,20 @@ class RegionFilter extends Filter {
   };
 
   static _getValue(filterItem) {
-    return filterItem.name;
+    return filterItem?.name ?? filterItem;
   }
 
   static _getDisplayedValueRenderer(filterItem, props) {
+    if (filterItem === null || filterItem?.name == null) {
+      return intl.formatMessage({ id: "notSet" });
+    }
     return <CloudLabel name={filterItem.name} type={filterItem.cloud_type} disableLink {...props} />;
   }
 
   static _getDisplayedValueStringRenderer(filterItem) {
+    if (filterItem === null || filterItem?.name == null) {
+      return intl.formatMessage({ id: "notSet" });
+    }
     return filterItem.name;
   }
 
@@ -61,10 +67,22 @@ class RegionFilter extends Filter {
   }
 
   static _sortFilterValues(items) {
-    return sortObjects({
-      array: items,
-      field: "name",
-      type: "asc",
+    // Vendor order first, then region name alphabetically within a vendor.
+    return [...items].sort((a, b) => {
+      if (a === null && b === null) {
+        return 0;
+      }
+      if (a === null) {
+        return 1;
+      }
+      if (b === null) {
+        return -1;
+      }
+      const vendorCmp = compareDataSourceVendors(getDataSourceVendor(a.cloud_type).id, getDataSourceVendor(b.cloud_type).id);
+      if (vendorCmp !== 0) {
+        return vendorCmp;
+      }
+      return String(a.name || "").localeCompare(String(b.name || ""));
     });
   }
 }

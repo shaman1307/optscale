@@ -1,14 +1,17 @@
-import { Fragment } from "react";
+import { Children, Fragment, useEffect, useMemo, useState } from "react";
 import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
 import DeleteOutlinedIcon from "@mui/icons-material/DeleteOutlined";
-import { Autocomplete } from "@mui/material";
+import { Autocomplete, Typography } from "@mui/material";
 import Box from "@mui/material/Box";
 import FormControl from "@mui/material/FormControl";
 import { Controller, useFieldArray, useFormContext } from "react-hook-form";
 import { FormattedMessage } from "react-intl";
 import { makeStyles } from "tss-react/mui";
+import { getApiUrl } from "api/utils";
 import Button from "components/Button";
 import CloudTypeIcon from "components/CloudTypeIcon";
+import { groupItemsByKey } from "components/FilterComponents/selectionFilterGroups";
+import { FILTER_CONFIGS } from "components/Resources/filterConfigs";
 import { Selector, TextInput } from "components/forms/common/fields";
 import IconButton from "components/IconButton";
 import IconLabel from "components/IconLabel";
@@ -16,6 +19,9 @@ import Input from "components/Input";
 import InputLoader from "components/InputLoader";
 import ResourceTypeLabel from "components/ResourceTypeLabel";
 import { ItemContent, ItemContentWithDataSourceIcon } from "components/Selector";
+import { useDebouncedValue } from "hooks/useDebouncedValue";
+import { useGetToken } from "hooks/useGetToken";
+import { useOrganizationInfo } from "hooks/useOrganizationInfo";
 import { intl } from "translations/react-intl-config";
 import {
   CONDITION_TYPES,
@@ -27,6 +33,7 @@ import {
   ARRAY_FORM_FIELD_FLEX_BASIS_WIDTH,
   RESOURCE_TYPE_IS,
   REGION_IS,
+  NAME_ID_IS,
   OPTSCALE_RESOURCE_TYPES,
 } from "utils/constants";
 import { SPACING_1 } from "utils/layouts";
@@ -49,7 +56,9 @@ const useStyles = makeStyles()((theme) => ({
     marginRight: theme.spacing(1),
   },
   deleteButton: {
+    display: "flex",
     alignItems: "flex-end",
+    paddingBottom: theme.spacing(1),
   },
 }));
 
@@ -261,12 +270,231 @@ const RegionIsAutocompleteField = ({ regions, name, count }) => {
   );
 };
 
+const NameIdAutocompleteField = ({ name, count, field }) => {
+  const {
+    control,
+    formState: { errors },
+    watch,
+  } = useFormContext();
+  const { organizationId } = useOrganizationInfo();
+  const { token } = useGetToken();
+  const [options, setOptions] = useState([]);
+  const [inputValue, setInputValue] = useState(field[META_INFO] ?? "");
+  const debouncedSearch = useDebouncedValue(inputValue, { delay: 300 });
+  const conditions = watch(name) || [];
+  const cloudAccountIds = conditions
+    .filter((item) => item?.[TYPE] === CLOUD_IS)
+    .map((item) => item[FIELD_NAMES.CONDITIONS_FIELD_ARRAY.CLOUD_IS_FIELD_NAME])
+    .filter(Boolean);
+  const cloudKey = cloudAccountIds.join(",");
+  const fieldName = `${name}.${count}.${META_INFO}`;
+  const fieldError = idx(fieldName.split("."), errors);
+
+  useEffect(() => {
+    const search = String(debouncedSearch || "").trim();
+    if (!organizationId || !token || search.length < 1) {
+      setOptions([]);
+      return undefined;
+    }
+    const params = new URLSearchParams();
+    params.set("search", search);
+    params.set("limit", "20");
+    (cloudKey ? cloudKey.split(",") : []).forEach((id) => params.append("cloud_account_id", id));
+    const controller = new AbortController();
+    fetch(`${getApiUrl("restapi")}/organizations/${organizationId}/virtual_tag_resource_options?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+      .then((response) => (response.ok ? response.json() : { resources: [] }))
+      .then((data) => setOptions(data.resources || []))
+      .catch((error) => {
+        if (error.name !== "AbortError") {
+          setOptions([]);
+        }
+      });
+    return () => controller.abort();
+  }, [cloudKey, debouncedSearch, organizationId, token]);
+
+  return (
+    <Controller
+      name={fieldName}
+      control={control}
+      defaultValue={field[META_INFO] ?? ""}
+      rules={{
+        required: {
+          value: true,
+          message: intl.formatMessage({ id: "thisFieldIsRequired" }),
+        },
+      }}
+      render={({ field: { value: formFieldValue, onChange, ...rest } }) => (
+        <Autocomplete
+          freeSolo
+          options={options}
+          filterOptions={(current) => current}
+          value={formFieldValue || ""}
+          inputValue={inputValue}
+          onInputChange={(event, newInputValue) => {
+            setInputValue(newInputValue);
+            if (event) {
+              onChange(newInputValue);
+            }
+          }}
+          onChange={(event, newValue) => {
+            if (newValue == null) {
+              onChange("");
+              setInputValue("");
+              return;
+            }
+            if (typeof newValue === "string") {
+              onChange(newValue);
+              setInputValue(newValue);
+              return;
+            }
+            const resourceId = newValue.cloud_resource_id || "";
+            onChange(resourceId);
+            setInputValue(resourceId);
+          }}
+          isOptionEqualToValue={(option, selected) =>
+            option.cloud_resource_id === (typeof selected === "string" ? selected : selected?.cloud_resource_id)
+          }
+          getOptionLabel={(option) => {
+            if (typeof option === "string") {
+              return option;
+            }
+            return option.cloud_resource_id || option.name || "";
+          }}
+          renderOption={(props, option) => (
+            <li {...props} key={option.cloud_resource_id || option.id}>
+              <Box>
+                <Box>{option.name || option.cloud_resource_id}</Box>
+                <Box sx={{ color: "text.secondary", fontSize: "0.75rem" }}>{option.cloud_resource_id}</Box>
+              </Box>
+            </li>
+          )}
+          renderInput={(autoCompleteParams) => (
+            <Input
+              required
+              label={<FormattedMessage id="nameIdIs" />}
+              dataTestId={`input_${fieldName}`}
+              error={!!fieldError}
+              helperText={fieldError?.message}
+              {...autoCompleteParams}
+              {...rest}
+            />
+          )}
+        />
+      )}
+    />
+  );
+};
+
+
+const CLOUD_ACCOUNT_FILTER = FILTER_CONFIGS.cloudAccountId;
+
+const DataSourceIsAutocompleteField = ({ cloudAccounts, name, count, field }) => {
+  const {
+    control,
+    formState: { errors },
+  } = useFormContext();
+
+  const NAME = FIELD_NAMES.CONDITIONS_FIELD_ARRAY.CLOUD_IS_FIELD_NAME;
+  const fieldName = `${name}.${count}.${NAME}`;
+  const fieldError = idx(fieldName.split("."), errors);
+
+  const options = useMemo(() => {
+    const items = CLOUD_ACCOUNT_FILTER.transformers.getItems(cloudAccounts);
+    return groupItemsByKey(items, CLOUD_ACCOUNT_FILTER.groupBy, CLOUD_ACCOUNT_FILTER.sortGroups).flatMap(
+      (group) => group.items
+    );
+  }, [cloudAccounts]);
+
+  return (
+    <Controller
+      name={fieldName}
+      control={control}
+      defaultValue={field[NAME] ?? ""}
+      rules={{
+        required: {
+          value: true,
+          message: intl.formatMessage({ id: "thisFieldIsRequired" }),
+        },
+      }}
+      render={({ field: { value: formFieldValue, onChange, ...rest } }) => {
+        const selected = options.find((option) => option.value === formFieldValue) ?? null;
+
+        return (
+          <Autocomplete
+            options={options}
+            value={selected}
+            onChange={(event, newValue) => onChange(newValue?.value ?? "")}
+            isOptionEqualToValue={(option, selectedValue) => option.value === selectedValue?.value}
+            getOptionLabel={(option) => option.name || ""}
+            groupBy={(option) => CLOUD_ACCOUNT_FILTER.groupBy(option)}
+            filterOptions={(currentOptions, state) => {
+              const query = state.inputValue;
+              if (!query) {
+                return currentOptions;
+              }
+              return currentOptions.filter((option) => CLOUD_ACCOUNT_FILTER.searchPredicate(option, query));
+            }}
+            renderGroup={(params) => (
+              <li key={params.key}>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.75,
+                    px: 1,
+                    py: 0.5,
+                    bgcolor: "action.hover",
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 1,
+                  }}
+                >
+                  {CLOUD_ACCOUNT_FILTER.renderGroupHeader(params.group)}
+                  <Typography variant="caption" color="text.secondary" component="span">
+                    ({Children.count(params.children)})
+                  </Typography>
+                </Box>
+                <Box component="ul" sx={{ m: 0, p: 0 }}>
+                  {params.children}
+                </Box>
+              </li>
+            )}
+            renderOption={(props, option) => (
+              <li {...props} key={option.value}>
+                {CLOUD_ACCOUNT_FILTER.renderItem(option)}
+              </li>
+            )}
+            renderInput={(autoCompleteParams) => (
+              <Input
+                required
+                label={<FormattedMessage id="dataSource" />}
+                dataTestId={`input_${fieldName}`}
+                error={!!fieldError}
+                helperText={fieldError?.message}
+                {...autoCompleteParams}
+                {...rest}
+              />
+            )}
+          />
+        );
+      }}
+    />
+  );
+};
+
 const ConditionsFieldArray = ({
   name = FIELD_NAME,
   isLoading = false,
   cloudAccounts,
   resourceTypes,
   regions,
+  enableResourceNameAutocomplete = false,
+  enableDataSourceFilterPicker = false,
+  compact = false,
+  addMessageId = "add",
 }: ConditionsFieldArrayProps) => {
   const { classes, cx } = useStyles();
 
@@ -322,6 +550,10 @@ const ConditionsFieldArray = ({
   };
 
   const renderCloudAccountSelector = (field, count) => {
+    if (enableDataSourceFilterPicker) {
+      return <DataSourceIsAutocompleteField cloudAccounts={cloudAccounts} name={name} count={count} field={field} />;
+    }
+
     const NAME = FIELD_NAMES.CONDITIONS_FIELD_ARRAY.CLOUD_IS_FIELD_NAME;
 
     return (
@@ -356,13 +588,18 @@ const ConditionsFieldArray = ({
           return <ResourceTypeIsAutocompleteField resourceTypes={resourceTypes} name={name} field={field} count={count} />;
         case REGION_IS:
           return <RegionIsAutocompleteField regions={regions} name={name} count={count} />;
+        case NAME_ID_IS:
+          if (enableResourceNameAutocomplete) {
+            return <NameIdAutocompleteField name={name} count={count} field={field} />;
+          }
+          return renderInputField(field, count);
         default:
           return renderInputField(field, count);
       }
     };
 
     return (
-      <Box display="flex" gap={SPACING_1} flexWrap="wrap">
+      <Box display="flex" gap={SPACING_1} flexWrap="wrap" sx={{ mb: compact ? 1 : 0 }}>
         <Box flexBasis={ARRAY_FORM_FIELD_FLEX_BASIS_WIDTH.MEDIUM} flexGrow={1}>
           <Selector
             name={`${name}.${count}.${TYPE}`}
@@ -382,8 +619,10 @@ const ConditionsFieldArray = ({
           />
         </Box>
         <Box display="flex" flexBasis={ARRAY_FORM_FIELD_FLEX_BASIS_WIDTH.MEDIUM} flexGrow={2} gap={SPACING_1}>
-          <Box flexGrow={1}>{renderField()}</Box>
-          <Box>
+          <Box flexGrow={1} minWidth={0}>
+            {renderField()}
+          </Box>
+          <Box className={classes.deleteButton}>
             <FormControl>
               <IconButton
                 color="error"
@@ -410,17 +649,31 @@ const ConditionsFieldArray = ({
       {fields.map((item, index) => (
         <Fragment key={item.id}>{conditionRow(item, index)}</Fragment>
       ))}
-      <FormControl fullWidth>
-        <Button
-          dashedBorder
-          startIcon={<AddOutlinedIcon />}
-          messageId="add"
-          dataTestId="btn_add"
-          size="large"
-          color="primary"
-          onClick={() => append(DEFAULT_CONDITION)}
-        />
-      </FormControl>
+      {compact ? (
+        <Box>
+          <Button
+            dashedBorder
+            startIcon={<AddOutlinedIcon />}
+            messageId={addMessageId}
+            dataTestId="btn_add"
+            size="small"
+            color="primary"
+            onClick={() => append(DEFAULT_CONDITION)}
+          />
+        </Box>
+      ) : (
+        <FormControl fullWidth>
+          <Button
+            dashedBorder
+            startIcon={<AddOutlinedIcon />}
+            messageId={addMessageId}
+            dataTestId="btn_add"
+            size="large"
+            color="primary"
+            onClick={() => append(DEFAULT_CONDITION)}
+          />
+        </FormControl>
+      )}
     </>
   );
 };

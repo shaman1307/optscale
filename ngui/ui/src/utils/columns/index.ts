@@ -68,6 +68,7 @@ import size from "./size";
 import slicedText from "./slicedText";
 import startedAt from "./startedAt";
 import tags from "./tags";
+import virtualTags from "./virtualTags";
 import tendency from "./tendency";
 import text from "./text";
 import usage from "./usage";
@@ -126,6 +127,7 @@ export {
   usage,
   resourcePoolOwner,
   tags,
+  virtualTags,
   formattedTime,
   powerScheduleValidityPeriod,
   powerScheduleInstance,

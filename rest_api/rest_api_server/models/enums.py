@@ -13,6 +13,7 @@ class CloudTypes(enum.Enum):
     NEBIUS = 'nebius'
     DATABRICKS = 'databricks'
     SNOWFLAKE = 'snowflake'
+    SNOWFLAKE_TENANT = 'snowflake_tenant'
 
 
 class ImportStates(enum.Enum):
@@ -78,6 +79,16 @@ class ConditionTypes(enum.Enum):
 class RuleOperators(str, enum.Enum):
     OR = 'or'
     AND = 'and'
+
+    @classmethod
+    # pylint: disable=E1101
+    def values(cls):
+        return [item.value for item in cls]
+
+
+class VirtualTagModes(str, enum.Enum):
+    EXTRACT = 'extract'
+    ASSIGNMENT = 'assignment'
 
     @classmethod
     # pylint: disable=E1101

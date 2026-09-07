@@ -1015,3 +1015,38 @@ class Err(enum.Enum):
         [],
         []
     ]
+    OE0575 = [
+        "Branch allocation shares must sum to 100 (got %s)",
+        ["share sum"],
+        ["80"]
+    ]
+    OE0576 = [
+        "Split allocations cannot be combined with multiple OR branches",
+        [],
+        []
+    ]
+    OE0577 = [
+        "Cloud account %s is already used in virtual tag rule \"%s\"",
+        ["cloud account id", "rule name"],
+        ["ca-id", "PRODUCT by project"]
+    ]
+    OE0578 = [
+        "source_tag_key is required for extract mode",
+        [],
+        []
+    ]
+    OE0579 = [
+        "Invalid virtual tag mode: %s",
+        ["mode"],
+        ["foo"]
+    ]
+    OE0580 = [
+        "invoice_months cannot be combined with start_date or end_date",
+        [],
+        []
+    ]
+    OE0581 = [
+        "Failed to control import schedulers: %s",
+        ["reason"],
+        ["compose services not found"]
+    ]

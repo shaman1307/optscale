@@ -30,12 +30,22 @@ class TestScheduleImportsApi(TestApiBase):
         self.org_id2 = self.org2['id']
         patch('rest_api.rest_api_server.controllers.report_import.'
               'ReportImportBaseController.publish_task').start()
+        self.import_settings = {
+            'not_processed_threshold_secs': DEFAULT_NOT_PROCESSED_REPORT_THRESHOLD_SECONDS,
+            'message_expiration_secs': DEFAULT_QUEUE_MESSAGE_EXPIRATION_SECONDS,
+        }
         patch(
             'optscale_client.config_client.client.Client.report_imports_setting',
-            return_value={
-                'not_processed_threshold_secs': DEFAULT_NOT_PROCESSED_REPORT_THRESHOLD_SECONDS,
-                'message_expiration_secs': DEFAULT_QUEUE_MESSAGE_EXPIRATION_SECONDS,
-            }
+            return_value=self.import_settings,
+        ).start()
+
+        def fake_write(key, value, **kwargs):
+            if str(key).endswith('incremental_scheduler_enabled'):
+                self.import_settings['incremental_scheduler_enabled'] = value
+
+        patch(
+            'optscale_client.config_client.client.Client.write',
+            side_effect=fake_write,
         ).start()
 
     def test_schedule_imports_without_cloud_acc(self):
@@ -206,13 +216,21 @@ class TestScheduleImportsApi(TestApiBase):
         code, ret = self.client.schedule_import(0)
 
         self.assertEqual(len(ret['report_imports']), 1)
+        first_import_id = ret['report_imports'][0]['id']
+        # Fresh SCHEDULED still waiting — do not enqueue a duplicate.
         code, ret = self.client.schedule_import(0)
         self.assertEqual(len(ret['report_imports']), 0)
-        with freeze_time(opttime.utcnow() + timedelta(hours=3)):
+        # Past 3h: fail the stuck SCHEDULED, then the same tick may create a
+        # replacement (never while the old row was still SCHEDULED).
+        with freeze_time(opttime.utcnow() + timedelta(hours=3, seconds=1)):
             code, resp = self.client.schedule_import(0)
             self.assertEqual(len(resp['report_imports']), 1)
             code, ret = self.client.schedule_import(0)
             self.assertEqual(len(ret['report_imports']), 0)
+            code, stale = self.client.report_import_get(first_import_id)
+            self.assertEqual(code, 200)
+            self.assertEqual(stale['state'], 'failed')
+            self.assertIn('stuck in scheduled', stale['state_reason'])
             for r in resp['report_imports']:
                 self.client.report_import_update(r['id'], {'state': 'completed'})
             code, ret = self.client.schedule_import(0)
@@ -227,13 +245,19 @@ class TestScheduleImportsApi(TestApiBase):
         self.client.report_import_update(imp['id'], {'state': 'in_progress'})
         code, ret = self.client.schedule_import(0)
         self.assertEqual(len(ret['report_imports']), 0)
-        with freeze_time(opttime.utcnow() + timedelta(hours=10)):
+        base = opttime.utcnow()
+        with freeze_time(base + timedelta(hours=10)):
             self.client.report_import_update(imp['id'], {})
             code, ret = self.client.schedule_import(0)
             self.assertEqual(len(ret['report_imports']), 0)
-        with freeze_time(opttime.utcnow() + timedelta(hours=10, minutes=31)):
+        # Past the 30m IN_PROGRESS idle threshold relative to the refresh above.
+        with freeze_time(base + timedelta(hours=10, minutes=31)):
             code, ret = self.client.schedule_import(0)
             self.assertEqual(len(ret['report_imports']), 1)
+            code, stale = self.client.report_import_get(imp['id'])
+            self.assertEqual(code, 200)
+            self.assertEqual(stale['state'], 'failed')
+            self.assertIn('stuck in progress', stale['state_reason'])
 
     def test_schedule_specific_cloud_account_busy(self):
         cloud_acc_id = self._create_cloud_acc_object(import_period=0)
@@ -245,3 +269,90 @@ class TestScheduleImportsApi(TestApiBase):
             cloud_account_id=cloud_acc_id)
         self.assertEqual(code, 409)
         self.assertEqual(ret['error']['error_code'], 'OE0574')
+
+    def test_import_scheduler_default_enabled(self):
+        code, ret = self.client.import_scheduler_get(self.org_id)
+        self.assertEqual(code, 200)
+        self.assertEqual(ret, {'enabled': True})
+
+    def test_import_scheduler_stop_skips_all_period_crons_keeps_manual(self):
+        period_acc = self._create_cloud_acc_object(import_period=0)
+        for period in (0, 1, 6, 24):
+            self._create_cloud_acc_object(import_period=period)
+        code, ret = self.client.import_scheduler_update(
+            self.org_id, {'enabled': False})
+        self.assertEqual(code, 200)
+        self.assertEqual(ret, {'enabled': False})
+        code, ret = self.client.import_scheduler_get(self.org_id)
+        self.assertEqual(code, 200)
+        self.assertFalse(ret['enabled'])
+        for period in (0, 1, 6, 24):
+            code, ret = self.client.schedule_import(period)
+            self.assertEqual(code, 201)
+            self.assertEqual(ret['report_imports'], [])
+        code, ret = self.client.schedule_import(cloud_account_id=period_acc)
+        self.assertEqual(code, 201)
+        self.assertEqual(len(ret['report_imports']), 1)
+        self.assertEqual(
+            ret['report_imports'][0]['cloud_account_id'], period_acc)
+
+    def test_import_scheduler_start_resumes_all_period_crons(self):
+        accounts = {
+            period: self._create_cloud_acc_object(import_period=period)
+            for period in (0, 1, 6, 24)
+        }
+        self.client.import_scheduler_update(self.org_id, {'enabled': False})
+        self.client.import_scheduler_update(self.org_id, {'enabled': True})
+        for period, acc_id in accounts.items():
+            code, ret = self.client.schedule_import(period)
+            self.assertEqual(code, 201)
+            self.assertEqual(len(ret['report_imports']), 1)
+            self.assertEqual(
+                ret['report_imports'][0]['cloud_account_id'], acc_id)
+
+    def test_import_scheduler_requires_bool_enabled(self):
+        code, ret = self.client.import_scheduler_update(self.org_id, {})
+        self.assertEqual(code, 400)
+        code, ret = self.client.import_scheduler_update(
+            self.org_id, {'enabled': 'yes'})
+        self.assertEqual(code, 400)
+
+    def test_import_scheduler_reads_docker_stopped_containers(self):
+        with patch(
+            'rest_api.rest_api_server.controllers.report_import.'
+            'docker_control_enabled', return_value=True
+        ), patch(
+            'rest_api.rest_api_server.controllers.report_import.'
+            'schedulers_enabled', return_value=False
+        ):
+            code, ret = self.client.import_scheduler_get(self.org_id)
+        self.assertEqual(code, 200)
+        self.assertEqual(ret, {'enabled': False})
+
+    def test_import_scheduler_patch_starts_docker_containers(self):
+        with patch(
+            'rest_api.rest_api_server.controllers.report_import.'
+            'docker_control_enabled', return_value=True
+        ), patch(
+            'rest_api.rest_api_server.controllers.report_import.'
+            'set_schedulers_enabled', return_value={'enabled': True}
+        ) as mock_set:
+            code, ret = self.client.import_scheduler_update(
+                self.org_id, {'enabled': True})
+        self.assertEqual(code, 200)
+        self.assertEqual(ret, {'enabled': True})
+        mock_set.assert_called_once_with(True)
+        self.assertNotIn(
+            'incremental_scheduler_enabled', self.import_settings)
+
+    def test_schedulers_enabled_false_when_containers_exited(self):
+        from rest_api.rest_api_server.controllers import (
+            import_scheduler_docker as docker_sched)
+        containers = [{
+            'Id': name,
+            'State': 'exited',
+            'Labels': {docker_sched.COMPOSE_SERVICE_LABEL: name},
+        } for name in docker_sched.SCHEDULER_SERVICES]
+        with patch.object(
+                docker_sched, '_docker_request', return_value=containers):
+            self.assertFalse(docker_sched.schedulers_enabled())

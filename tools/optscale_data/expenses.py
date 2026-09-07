@@ -1,9 +1,67 @@
 import re
 from calendar import monthrange
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from optscale_data.clickhouse import ExternalDataConverter
 from tools.optscale_time import utcnow
+
+# Fan-out count_documents beats a single $in+$group scan on large orgs.
+_PARALLEL_COUNT_THRESHOLD = 16
+_PARALLEL_COUNT_WORKERS = 16
+_SEARCH_CLOUD_ACCOUNT_DATES_HINT = 'SearchCloudAccountDates2'
+_CLOUD_ACCOUNT_ID_HINT = 'CloudAccountID'
+
+
+def count_resources_by_cloud_account(
+        resources_collection, cloud_acc_list, match_extra=None, hint=None):
+    """Return {cloud_account_id: count} for non-deleted resources.
+
+    For large cloud_acc_list, parallel per-account count_documents uses the
+    cloud_account_id indexes instead of scanning the whole $in set once.
+    """
+    cloud_acc_list = list(cloud_acc_list)
+    if not cloud_acc_list:
+        return {}
+
+    match_extra = match_extra or {}
+
+    if len(cloud_acc_list) < _PARALLEL_COUNT_THRESHOLD:
+        match = {
+            'cloud_account_id': {'$in': cloud_acc_list},
+            'deleted_at': 0,
+            **match_extra,
+        }
+        pipeline = [
+            {'$match': match},
+            {'$group': {'_id': '$cloud_account_id', 'count': {'$sum': 1}}},
+        ]
+        return {
+            row['_id']: int(row.get('count') or 0)
+            for row in resources_collection.aggregate(pipeline)
+        }
+
+    def _count_one(cloud_account_id):
+        query = {
+            'cloud_account_id': cloud_account_id,
+            'deleted_at': 0,
+            **match_extra,
+        }
+        if hint:
+            try:
+                return cloud_account_id, resources_collection.count_documents(
+                    query, hint=hint)
+            except Exception:
+                pass
+        return cloud_account_id, resources_collection.count_documents(query)
+
+    workers = min(_PARALLEL_COUNT_WORKERS, len(cloud_acc_list))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return {
+            cloud_account_id: int(count)
+            for cloud_account_id, count in pool.map(_count_one, cloud_acc_list)
+            if count
+        }
 
 
 class ExpenseQuery:
@@ -15,28 +73,28 @@ class ExpenseQuery:
         return self._execute_ch(query=query, **kwargs)
 
     def get_cloud_expenses_with_resource_info(self, cloud_acc_list, start_date, end_date):
-        pipeline = [
-            {
-                '$match': {
-                    '$and': [
-                        {'cloud_account_id': {'$in': cloud_acc_list}},
-                        {'_first_seen_date': {'$lt': end_date}},
-                        {'_last_seen_date': {'$gte': start_date.replace(
-                            hour=0, minute=0, second=0, microsecond=0)}},
-                        {'first_seen': {'$lt': int(end_date.timestamp())}},
-                        {'last_seen': {'$gte': int(start_date.timestamp())}},
-                        {'deleted_at': 0}
-                    ]
-                }
+        start_day = start_date.replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        resource_counts = count_resources_by_cloud_account(
+            self._resources,
+            cloud_acc_list,
+            match_extra={
+                '_first_seen_date': {'$lt': end_date},
+                '_last_seen_date': {'$gte': start_day},
+                'first_seen': {'$lt': int(end_date.timestamp())},
+                'last_seen': {'$gte': int(start_date.timestamp())},
             },
-            {
-                '$group': {
-                    '_id': '$cloud_account_id',
-                    'count': {'$sum': 1}
-                }
-            }
+            hint=_SEARCH_CLOUD_ACCOUNT_DATES_HINT,
+        )
+        # Keep the historical INNER JOIN semantics: only accounts that have
+        # matching resources in the period are returned with costs.
+        if not resource_counts:
+            return []
+
+        resource_count_rows = [
+            {'_id': cloud_account_id, 'count': count}
+            for cloud_account_id, count in resource_counts.items()
         ]
-        resource_counts = list(self._resources.aggregate(pipeline))
         query = """
             SELECT cloud_account_id, SUM(cost * sign), count
             FROM expenses
@@ -51,7 +109,7 @@ class ExpenseQuery:
             parameters={
                 'start_date': start_date,
                 'end_date': end_date,
-                'cloud_acc_list': cloud_acc_list
+                'cloud_acc_list': list(resource_counts.keys())
             },
             external_data=ExternalDataConverter()([{
                 'name': 'cloud_accounts',
@@ -59,7 +117,7 @@ class ExpenseQuery:
                     ('_id', 'String'),
                     ('count', 'Int32')
                 ],
-                'data': resource_counts
+                'data': resource_count_rows
             }]),
         )
 
@@ -70,11 +128,8 @@ class ExpenseQuery:
         last_month_start = (month_start - timedelta(days=1)).replace(day=1)
         start_date = max(last_month_start, first_expense) if (
             first_expense) else last_month_start
-        # today.day = calendar days with cost through "today" (inclusive).
-        # Old (today - month_start).days was off-by-one and counted one extra
-        # remaining day (e.g. cost through Jul 22 → 10 days left instead of 9).
-        worked_days = today.day
-        forecast_days = (today - start_date).days + 1
+        worked_days = (today - month_start).days
+        forecast_days = (today - start_date).days
         daily_forecast = cost / forecast_days if forecast_days > 0 else cost
         _, days_in_month = monthrange(today.year, today.month)
         forecast = month_cost + daily_forecast * (days_in_month - worked_days)

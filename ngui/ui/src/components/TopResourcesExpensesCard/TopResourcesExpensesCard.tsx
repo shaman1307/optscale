@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 import CloudLabel from "components/CloudLabel";
 import CloudResourceId from "components/CloudResourceId";
 import CloudTypeIcon from "components/CloudTypeIcon";
+import ResourceName from "components/ResourceName";
 import DashedTypography from "components/DashedTypography";
 import FormattedMoney from "components/FormattedMoney";
 import IconButton from "components/IconButton";
@@ -71,17 +72,19 @@ const TopResourcesView = ({ data }) => {
       cluster_type_id: clusterTypeId,
       is_environment: isEnvironment,
       resource_id: resourceId,
+      resource_name: resourceName,
       shareable,
       cloud_account_id: cloudId,
       cloud_account_name: cloudName,
     } = original;
+    const cloudResourceIdentifier = getCloudResourceIdentifier(original);
     return (
       <Tooltip
         key={id}
         title={
           <Stack spacing={SPACING_1}>
-            <Property messageId="id" value={getCloudResourceIdentifier(original)} />
-            {!!original.resource_name && <Property messageId="name" value={original.resource_name} />}
+            <Property messageId="id" value={cloudResourceIdentifier} />
+            {!!resourceName && <Property messageId="name" value={resourceName} />}
             <Property
               messageId="type"
               value={<ResourceTypeLabel resourceInfo={{ shareable, resourceId, isEnvironment, clusterTypeId, resourceType }} />}
@@ -106,17 +109,26 @@ const TopResourcesView = ({ data }) => {
         <Typography component="div" className={classes.item}>
           <div className={classes.bar} style={{ width: `${percentXofY(cost, maxValue) * 100}%` }} />
           <div className={cx(classes.flexRow, classes.itemContent)}>
-            <div className={classes.flexRow}>
+            <div className={classes.identity}>
               <CloudTypeIcon type={cloudType} hasRightMargin />
-              <CloudResourceId
-                disableFullNameTooltip
-                resourceId={resourceId}
-                cloudResourceIdentifier={getCloudResourceIdentifier(original)}
-              />
+              <div className={classes.identityText}>
+                <CloudResourceId
+                  disableFullNameTooltip
+                  resourceId={resourceId}
+                  cloudResourceIdentifier={cloudResourceIdentifier}
+                />
+                {resourceName && resourceName !== cloudResourceIdentifier ? (
+                  <div>
+                    <ResourceName name={resourceName} />
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <TitleValue>
-              <FormattedMoney type={FORMATTED_MONEY_TYPES.COMMON} value={cost} />
-            </TitleValue>
+            <div className={classes.cost}>
+              <TitleValue>
+                <FormattedMoney type={FORMATTED_MONEY_TYPES.COMMON} value={cost} />
+              </TitleValue>
+            </div>
           </div>
         </Typography>
       </Tooltip>

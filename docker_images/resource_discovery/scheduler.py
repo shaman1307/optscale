@@ -38,25 +38,36 @@ def publish_tasks(config_client, tasks_map):
                 )
 
 
-def _update_discovery_info(rest_cl, cloud_account_type, cloud_account_id,
-                           discovery_infos):
+def _adapter_config_from_cloud_account(cloud_account):
+    """Build adapter config including project_id for virtual CA detection."""
+    config = dict(cloud_account.get('config') or {})
+    config['type'] = cloud_account['type']
+    return config
+
+
+def _update_discovery_info(rest_cl, cloud_account, discovery_infos):
     """
     Checks and dynamically updates discovery_info for cloud account according
-    to the cloud account type. Deletes discovery_info not supported for cloud
-    type, creates discovery_info if they are missing for cloud_account_id but
-    supported according to the cloud account type
+    to the cloud account type/config. Deletes discovery_info not supported for
+    cloud type, creates discovery_info if they are missing for cloud_account_id
+    but supported according to the cloud account type.
+
+    Virtual GCP billing-only CAs (__gcp_svc__*, __gcp_unassigned__) expose an
+    empty discovery_calls_map, so their discovery_info rows are removed and
+    Compute/Storage is never polled.
 
     :param rest_cl: (obj) instance of rest_api_client.client_v2.Client
-    :param cloud_account_type: (str) type of cloud account
-    :param cloud_account_id: (str) id of cloud account
+    :param cloud_account: (dict) cloud account from list/get API
     :param discovery_infos: (dict) discovery_info for cloud account (response
     of discovery_info list API)
 
     :return: updated discovery_info dictionary
     """
+    cloud_account_id = cloud_account['id']
     existing_r_types = set(x['resource_type']
                            for x in discovery_infos['discovery_info'])
-    adapter = Cloud.get_adapter({'type': cloud_account_type})
+    adapter = Cloud.get_adapter(
+        _adapter_config_from_cloud_account(cloud_account))
     discovery_calls = adapter.discovery_calls_map()
     cloud_supported_r_types = set(
         rt for rt, model in RES_MODEL_MAP.items()
@@ -104,8 +115,7 @@ def process(config_cl):
                 continue
             try:
                 _, r = rest_cl.discovery_info_list(ca['id'])
-                discovery_infos = _update_discovery_info(rest_cl, ca['type'],
-                                                         ca['id'], r)
+                discovery_infos = _update_discovery_info(rest_cl, ca, r)
                 for di_info in discovery_infos['discovery_info']:
                     resource_type = di_info['resource_type']
                     if (max(
@@ -122,6 +132,11 @@ def process(config_cl):
                         tasks_map[organization['id']].append(
                             (ca['id'], di_info['resource_type']))
             except requests.exceptions.HTTPError as ex:
+                LOG.error(
+                    'Failed to publish tasks for cloud account %s: %s',
+                    ca['id'], str(ex))
+                continue
+            except Exception as ex:
                 LOG.error(
                     'Failed to publish tasks for cloud account %s: %s',
                     ca['id'], str(ex))

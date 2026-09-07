@@ -9,7 +9,8 @@ import { useInScopeOfPageMockup } from "hooks/useInScopeOfPageMockup";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
 import { MOCKED_ORGANIZATION_POOL_ID } from "stories";
 import { isError } from "utils/api";
-import { START_DATE_FILTER, END_DATE_FILTER } from "utils/constants";
+import { START_DATE_FILTER, END_DATE_FILTER, INVOICE_MONTHS_FILTER } from "utils/constants";
+import { isIncompleteBillingPeriod, toExpensePeriodApiParams } from "utils/costPeriod";
 import { mapAvailableFilterKeys } from "./AvailableFiltersService";
 
 const mockedData = {
@@ -208,8 +209,11 @@ const mockedData = {
 };
 
 export const mapCleanExpensesFilterParamsToApiParams = (params) => ({
-  start_date: params[START_DATE_FILTER],
-  end_date: params[END_DATE_FILTER],
+  ...toExpensePeriodApiParams({
+    startDate: params[START_DATE_FILTER],
+    endDate: params[END_DATE_FILTER],
+    invoiceMonths: params[INVOICE_MONTHS_FILTER] ?? params.invoice_months,
+  }),
   ...mapAvailableFilterKeys(params),
 });
 
@@ -233,7 +237,7 @@ export const useGet = ({ params = {} } = {}) => {
       organizationId: organizationId,
       params: mapCleanExpensesRequestParamsToApiParams(params),
     },
-    skip: inScopeOfPageMockup,
+    skip: inScopeOfPageMockup || isIncompleteBillingPeriod(params),
   });
 
   return inScopeOfPageMockup

@@ -9,7 +9,7 @@ import re
 import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from functools import cache
 from string import ascii_letters, digits
@@ -588,6 +588,231 @@ def decrypt_bi_meta(value):
     return fernet.decrypt(value.encode()).decode()
 
 
+VIRTUAL_TAG_BREAKDOWN_PREFIX = 'virtual_tag:'
+QUARTER_RE = re.compile(r'^\d{4}Q[1-4]$')
+
+
+def invoice_month_to_quarter(yyyymm):
+    if yyyymm is None or yyyymm == '':
+        return None
+    value = str(yyyymm)
+    if len(value) < 6 or not value[:6].isdigit():
+        return None
+    year = int(value[:4])
+    month = int(value[4:6])
+    if month < 1 or month > 12:
+        return None
+    return '%sQ%s' % (year, (month - 1) // 3 + 1)
+
+
+def current_quarter(now=None):
+    now = now or datetime.now(timezone.utc)
+    return invoice_month_to_quarter('%04d%02d' % (now.year, now.month))
+
+
+def check_quarter(value, name='quarter'):
+    if value is None or value == '':
+        raise_not_provided_exception(name)
+    value = str(value)
+    if not QUARTER_RE.match(value):
+        raise WrongArgumentsException(Err.OE0218, [name, value])
+    return value
+
+
+def quarters_for_invoice_months(invoice_months):
+    quarters = []
+    seen = set()
+    for month in invoice_months or []:
+        quarter = invoice_month_to_quarter(month)
+        if quarter and quarter not in seen:
+            seen.add(quarter)
+            quarters.append(quarter)
+    return quarters
+
+
+def import_quarters_from_payload(resource=None, invoice_month=None):
+    """Quarters to write on resource import. Default: current calendar quarter."""
+    months = []
+    if invoice_month:
+        months.append(invoice_month)
+    if resource:
+        extra = resource.get('invoice_months')
+        if extra is None:
+            extra = []
+        elif isinstance(extra, str):
+            extra = [extra]
+        months.extend(extra)
+        if resource.get('invoice_month'):
+            months.append(resource.get('invoice_month'))
+    return quarters_for_invoice_months(months) or [current_quarter()]
+
+
+def virtual_tags_for_quarter(resource, quarter):
+    """Allocations for a quarter; fall back to legacy virtual_tags."""
+    by_quarter = resource.get('virtual_tags_by_quarter') or {}
+    if isinstance(by_quarter, dict) and quarter in by_quarter:
+        return by_quarter.get(quarter) or []
+    return resource.get('virtual_tags') or []
+
+
+def merge_virtual_tags_for_quarters(resource, quarters):
+    if not quarters:
+        quarters = [current_quarter()]
+    merged = []
+    seen = set()
+    for quarter in quarters:
+        for alloc in virtual_tags_for_quarter(resource, quarter):
+            if not isinstance(alloc, dict):
+                continue
+            ident = (
+                alloc.get('key'), alloc.get('value'),
+                int(alloc.get('share') or 0))
+            if ident in seen:
+                continue
+            seen.add(ident)
+            merged.append({
+                'key': alloc.get('key'),
+                'value': alloc.get('value'),
+                'share': int(alloc.get('share') or 0),
+            })
+    return merged
+
+
+def is_virtual_tag_breakdown(breakdown_by):
+    return bool(breakdown_by) and str(breakdown_by).startswith(
+        VIRTUAL_TAG_BREAKDOWN_PREFIX)
+
+
+def virtual_tag_breakdown_key(breakdown_by):
+    return str(breakdown_by).split(':', 1)[1]
+
+
+def resource_virtual_tag_cost_share(virtual_tags, vt_params):
+    """Fraction of cost (0..1) attributed to the VT filter.
+
+    No filter or more than one VT key → 1.0 (full billed cost).
+    One key → sum(matching allocation shares) / 100.
+    """
+    if not vt_params:
+        return 1.0
+    keys = set()
+    values_by_key = {}
+    key_only = set()
+    nil_uuid = get_nil_uuid()
+    for raw in vt_params:
+        if raw is None or str(raw) == nil_uuid:
+            continue
+        token = str(raw)
+        if ':' not in token:
+            keys.add(token)
+            key_only.add(token)
+            continue
+        key, value = token.split(':', 1)
+        keys.add(key)
+        values_by_key.setdefault(key, set()).add(value)
+    if len(keys) != 1:
+        return 1.0
+    key = next(iter(keys))
+    wanted = None if key in key_only else values_by_key.get(key)
+    total = 0.0
+    for alloc in virtual_tags or []:
+        if not isinstance(alloc, dict) or alloc.get('key') != key:
+            continue
+        if wanted is not None and alloc.get('value') not in wanted:
+            continue
+        total += float(alloc.get('share') or 0)
+    return total / 100.0
+
+
+def virtual_tag_filter_values_for_key(vt_params, key):
+    """Allowed values for a VT key, or None when every value of the key counts."""
+    if not vt_params or not key:
+        return None
+    wanted = set()
+    key_only = False
+    matched = False
+    for raw in vt_params:
+        if raw is None:
+            continue
+        token = str(raw)
+        if token == key:
+            matched = True
+            key_only = True
+            continue
+        prefix = '%s:' % key
+        if token.startswith(prefix):
+            matched = True
+            wanted.add(token[len(prefix):])
+    if not matched or key_only:
+        return None
+    return wanted
+
+
+def load_virtual_tag_cost_shares(collection, resource_ids, vt_params,
+                                 invoice_months=None):
+    """Map resource id → cost fraction, or id → {invoice_month: fraction}."""
+    if not vt_params or not resource_ids:
+        return {}
+    quarters = quarters_for_invoice_months(invoice_months)
+    mixed = len(quarters) > 1
+    result = {}
+    for doc in collection.find(
+            {'_id': {'$in': list(resource_ids)}},
+            ['virtual_tags', 'virtual_tags_by_quarter']):
+        if mixed:
+            by_month = {}
+            for month in invoice_months:
+                quarter = invoice_month_to_quarter(month)
+                by_month[month] = resource_virtual_tag_cost_share(
+                    virtual_tags_for_quarter(doc, quarter), vt_params)
+            result[doc['_id']] = by_month
+            continue
+        quarter = quarters[0] if quarters else current_quarter()
+        result[doc['_id']] = resource_virtual_tag_cost_share(
+            virtual_tags_for_quarter(doc, quarter), vt_params)
+    return result
+
+
+def build_virtual_tag_mongo_filter(vt_params, nil_uuid, quarters=None):
+    """Match resources whose VT list (per quarter) contains key[+value]."""
+    vt_filter = []
+    quarter_keys = list(quarters or [])
+    for value in vt_params or []:
+        if value == nil_uuid:
+            empty = [
+                {'virtual_tags': {'$exists': False}},
+                {'virtual_tags': None},
+                {'virtual_tags': []},
+            ]
+            for quarter in quarter_keys:
+                field = 'virtual_tags_by_quarter.%s' % quarter
+                empty.extend([
+                    {field: {'$exists': False}},
+                    {field: None},
+                    {field: []},
+                ])
+            vt_filter.append({'$or': empty})
+            continue
+        if ':' not in str(value):
+            match = {'key': value}
+        else:
+            key, tag_value = str(value).split(':', 1)
+            match = {'key': key, 'value': tag_value}
+        paths = ['virtual_tags']
+        paths.extend(
+            'virtual_tags_by_quarter.%s' % quarter
+            for quarter in quarter_keys)
+        vt_filter.append({
+            '$or': [
+                {path: {'$elemMatch': match}}
+                for path in paths
+            ]
+        })
+    if not vt_filter:
+        return None
+    return {'$or': vt_filter}
+
+
 class SupportedFiltersMixin(object):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -596,7 +821,7 @@ class SupportedFiltersMixin(object):
             'region', 'resource_type', 'created_by_kind',
             'created_by_name', 'k8s_namespace', 'k8s_node',
             'k8s_service', 'account_locator', 'tag', 'without_tag',
-            'traffic_from', 'traffic_to', '_id', 'meta'
+            'traffic_from', 'traffic_to', '_id', 'meta', 'virtual_tag'
         ]
         self.bool_filters = [
             'active', 'recommendations', 'constraint_violated'

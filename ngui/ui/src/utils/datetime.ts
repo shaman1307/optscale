@@ -163,7 +163,13 @@ export const format = (date, dateFormat = EN_FORMAT) => formatFNS(date, dateForm
  * @param dateFormat	String - the string of tokens, "MM/dd/yyyy" by default
  * @returns { String } the formatted date string
  */
-export const formatISO = (string, dateFormat = EN_FORMAT) => formatFNS(parseISO(string), dateFormat);
+export const formatISO = (string, dateFormat = EN_FORMAT) => {
+  if (string == null || string === "") {
+    return "";
+  }
+  const parsed = parseISO(String(string).replace(" ", "T"));
+  return isValid(parsed) ? formatFNS(parsed, dateFormat) : "";
+};
 
 /**
  * Get a date/time string from a unix timestamp

@@ -9,10 +9,12 @@ type ItemContentWithDataSourceIconProps = {
     | "azure_tenant"
     | "databricks"
     | "snowflake"
+    | "snowflake_tenant"
     | "kubernetes_cnr"
     | "alibaba_cnr"
     | "environment"
     | "gcp_cnr"
+    | "gcp_tenant"
     | "nebius";
   children: ReactNode;
 };

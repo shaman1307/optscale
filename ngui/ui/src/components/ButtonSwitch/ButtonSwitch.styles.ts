@@ -4,10 +4,9 @@ const useStyles = makeStyles()((theme) => ({
   root: {
     display: "flex",
     justifyContent: "center",
+    alignItems: "center",
     flexWrap: "wrap",
-    "& > *": {
-      margin: theme.spacing(1),
-    },
+    gap: theme.spacing(1),
   },
 }));
 

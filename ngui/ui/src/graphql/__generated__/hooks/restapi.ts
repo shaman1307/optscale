@@ -51,9 +51,11 @@ export type AvailableFiltersParams = {
   active?: InputMaybe<Array<Scalars["Boolean"]["input"]>>;
   cloud_account_id?: InputMaybe<Array<Scalars["String"]["input"]>>;
   constraint_violated?: InputMaybe<Array<Scalars["Boolean"]["input"]>>;
-  end_date: Scalars["Int"]["input"];
+  end_date?: InputMaybe<Scalars["Int"]["input"]>;
+  facets?: InputMaybe<Scalars["String"]["input"]>;
   first_seen_gte?: InputMaybe<Scalars["Int"]["input"]>;
   first_seen_lte?: InputMaybe<Scalars["Int"]["input"]>;
+  invoice_months?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_namespace?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_node?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_service?: InputMaybe<Array<Scalars["String"]["input"]>>;
@@ -66,10 +68,11 @@ export type AvailableFiltersParams = {
   region?: InputMaybe<Array<Scalars["String"]["input"]>>;
   resource_type?: InputMaybe<Array<Scalars["String"]["input"]>>;
   service_name?: InputMaybe<Array<Scalars["String"]["input"]>>;
-  start_date: Scalars["Int"]["input"];
+  start_date?: InputMaybe<Scalars["Int"]["input"]>;
   tag?: InputMaybe<Array<Scalars["String"]["input"]>>;
   traffic_from?: InputMaybe<Array<Scalars["String"]["input"]>>;
   traffic_to?: InputMaybe<Array<Scalars["String"]["input"]>>;
+  virtual_tag?: InputMaybe<Array<Scalars["String"]["input"]>>;
   without_tag?: InputMaybe<Array<Scalars["String"]["input"]>>;
 };
 
@@ -249,7 +252,8 @@ export type BreakdownBy =
   | "pool_id"
   | "region"
   | "resource_type"
-  | "service_name";
+  | "service_name"
+  | "subpool";
 
 export type BreakdownParams = {
   account_locator?: InputMaybe<Array<Scalars["String"]["input"]>>;
@@ -257,9 +261,10 @@ export type BreakdownParams = {
   breakdown_by: Scalars["String"]["input"];
   cloud_account_id?: InputMaybe<Array<Scalars["String"]["input"]>>;
   constraint_violated?: InputMaybe<Array<Scalars["Boolean"]["input"]>>;
-  end_date: Scalars["Int"]["input"];
+  end_date?: InputMaybe<Scalars["Int"]["input"]>;
   first_seen_gte?: InputMaybe<Scalars["Int"]["input"]>;
   first_seen_lte?: InputMaybe<Scalars["Int"]["input"]>;
+  invoice_months?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_namespace?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_node?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_service?: InputMaybe<Array<Scalars["String"]["input"]>>;
@@ -272,7 +277,7 @@ export type BreakdownParams = {
   region?: InputMaybe<Array<Scalars["String"]["input"]>>;
   resource_type?: InputMaybe<Array<Scalars["String"]["input"]>>;
   service_name?: InputMaybe<Array<Scalars["String"]["input"]>>;
-  start_date: Scalars["Int"]["input"];
+  start_date?: InputMaybe<Scalars["Int"]["input"]>;
   tag?: InputMaybe<Array<Scalars["String"]["input"]>>;
   traffic_from?: InputMaybe<Array<Scalars["String"]["input"]>>;
   traffic_to?: InputMaybe<Array<Scalars["String"]["input"]>>;
@@ -284,10 +289,11 @@ export type CleanExpensesParams = {
   active?: InputMaybe<Array<InputMaybe<Scalars["Boolean"]["input"]>>>;
   cloud_account_id?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   constraint_violated?: InputMaybe<Array<InputMaybe<Scalars["Boolean"]["input"]>>>;
-  end_date: Scalars["Int"]["input"];
+  end_date?: InputMaybe<Scalars["Int"]["input"]>;
   first_seen_gte?: InputMaybe<Scalars["Int"]["input"]>;
   first_seen_lte?: InputMaybe<Scalars["Int"]["input"]>;
   format?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
+  invoice_months?: InputMaybe<Array<Scalars["String"]["input"]>>;
   k8s_namespace?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   k8s_node?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   k8s_service?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
@@ -301,10 +307,11 @@ export type CleanExpensesParams = {
   region?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   resource_type?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   service_name?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
-  start_date: Scalars["Int"]["input"];
+  start_date?: InputMaybe<Scalars["Int"]["input"]>;
   tag?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   traffic_from?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   traffic_to?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
+  virtual_tag?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
   without_tag?: InputMaybe<Array<InputMaybe<Scalars["String"]["input"]>>>;
 };
 
@@ -321,12 +328,12 @@ export type CreateDataSourceInput = {
   azureSubscriptionConfig?: InputMaybe<AzureSubscriptionConfigInput>;
   azureTenantConfig?: InputMaybe<AzureTenantConfigInput>;
   databricksConfig?: InputMaybe<DatabricksConfigInput>;
-  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   gcpConfig?: InputMaybe<GcpConfigInput>;
   gcpTenantConfig?: InputMaybe<GcpTenantConfigInput>;
   k8sConfig?: InputMaybe<K8sConfigInput>;
   name?: InputMaybe<Scalars["String"]["input"]>;
   nebiusConfig?: InputMaybe<NebiusConfigInput>;
+  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   type?: InputMaybe<Scalars["String"]["input"]>;
 };
 
@@ -339,7 +346,9 @@ export type DataSourceDetails = {
   billing_period_end?: Maybe<Scalars["Int"]["output"]>;
   billing_period_start?: Maybe<Scalars["Int"]["output"]>;
   cost: Scalars["Float"]["output"];
+  cost_mismatch?: Maybe<Scalars["Boolean"]["output"]>;
   discovery_infos?: Maybe<Array<Maybe<DataSourceDiscoveryInfos>>>;
+  duplicate_groups?: Maybe<Scalars["Int"]["output"]>;
   forecast: Scalars["Float"]["output"];
   last_month_cost?: Maybe<Scalars["Float"]["output"]>;
   resources: Scalars["Int"]["output"];
@@ -387,62 +396,18 @@ export type DataSourceType =
   | "azure_cnr"
   | "azure_tenant"
   | "databricks"
-  | "snowflake"
   | "environment"
   | "gcp_cnr"
   | "gcp_tenant"
   | "kubernetes_cnr"
-  | "nebius";
+  | "nebius"
+  | "snowflake"
+  | "snowflake_tenant";
 
 export type DatabricksConfig = {
   __typename?: "DatabricksConfig";
   account_id?: Maybe<Scalars["String"]["output"]>;
   client_id?: Maybe<Scalars["String"]["output"]>;
-};
-
-
-export type SnowflakeConfig = {
-  __typename?: "SnowflakeConfig";
-  account?: Maybe<Scalars["String"]["output"]>;
-  billing_source?: Maybe<Scalars["String"]["output"]>;
-  cost_model?: Maybe<SnowflakeCostModelConfig>;
-  role?: Maybe<Scalars["String"]["output"]>;
-  user?: Maybe<Scalars["String"]["output"]>;
-  warehouse?: Maybe<Scalars["String"]["output"]>;
-};
-
-export type SnowflakeCostModelConfig = {
-  __typename?: "SnowflakeCostModelConfig";
-  credit_price?: Maybe<Scalars["Float"]["output"]>;
-  storage_price_per_tb_month?: Maybe<Scalars["Float"]["output"]>;
-};
-
-export type SnowflakeConfigInput = {
-  account: Scalars["String"]["input"];
-  billing_source?: InputMaybe<Scalars["String"]["input"]>;
-  cost_model?: InputMaybe<Scalars["JSONObject"]["input"]>;
-  private_key?: InputMaybe<Scalars["String"]["input"]>;
-  role?: InputMaybe<Scalars["String"]["input"]>;
-  user: Scalars["String"]["input"];
-  warehouse: Scalars["String"]["input"];
-};
-
-export type SnowflakeDataSource = DataSourceInterface & {
-  __typename?: "SnowflakeDataSource";
-  account_id: Scalars["String"]["output"];
-  config?: Maybe<SnowflakeConfig>;
-  created_at?: Maybe<Scalars["Int"]["output"]>;
-  details?: Maybe<DataSourceDetails>;
-  id: Scalars["String"]["output"];
-  last_getting_metric_attempt_at: Scalars["Int"]["output"];
-  last_getting_metric_attempt_error?: Maybe<Scalars["String"]["output"]>;
-  last_getting_metrics_at: Scalars["Int"]["output"];
-  last_import_at: Scalars["Int"]["output"];
-  last_import_attempt_at: Scalars["Int"]["output"];
-  last_import_attempt_error?: Maybe<Scalars["String"]["output"]>;
-  name: Scalars["String"]["output"];
-  parent_id?: Maybe<Scalars["String"]["output"]>;
-  type: DataSourceType;
 };
 
 export type DatabricksConfigInput = {
@@ -505,7 +470,7 @@ export type EnvironmentDataSource = DataSourceInterface & {
 export type ExpensesDailyBreakdown = {
   __typename?: "ExpensesDailyBreakdown";
   breakdown: Scalars["JSONObject"]["output"];
-  breakdown_by: BreakdownBy;
+  breakdown_by: Scalars["String"]["output"];
   counts: Scalars["JSONObject"]["output"];
   previous_range_start: Scalars["Int"]["output"];
   previous_total: Scalars["Int"]["output"];
@@ -517,12 +482,14 @@ export type GcpBillingDataConfig = {
   __typename?: "GcpBillingDataConfig";
   dataset_name: Scalars["String"]["output"];
   project_id?: Maybe<Scalars["String"]["output"]>;
+  resource_table_name?: Maybe<Scalars["String"]["output"]>;
   table_name: Scalars["String"]["output"];
 };
 
 export type GcpBillingDataConfigInput = {
   dataset_name: Scalars["String"]["input"];
   project_id?: InputMaybe<Scalars["String"]["input"]>;
+  resource_table_name?: InputMaybe<Scalars["String"]["input"]>;
   table_name: Scalars["String"]["input"];
 };
 
@@ -573,6 +540,7 @@ export type GcpTenantBillingDataConfig = {
   __typename?: "GcpTenantBillingDataConfig";
   dataset_name: Scalars["String"]["output"];
   project_id?: Maybe<Scalars["String"]["output"]>;
+  resource_table_name?: Maybe<Scalars["String"]["output"]>;
   table_name: Scalars["String"]["output"];
 };
 
@@ -911,7 +879,9 @@ export type Query = {
   organizationThemeSettings?: Maybe<Scalars["JSONObject"]["output"]>;
   organizations: Array<Organization>;
   relevantFlavors?: Maybe<Scalars["JSONObject"]["output"]>;
+  reportImports: Array<ReportImport>;
   resourceCountBreakdown?: Maybe<ResourceCountBreakdown>;
+  resourceDuplicates: ResourceDuplicates;
 };
 
 export type QueryAvailableFiltersArgs = {
@@ -999,15 +969,38 @@ export type QueryRelevantFlavorsArgs = {
   requestParams?: InputMaybe<Scalars["JSONObject"]["input"]>;
 };
 
+export type QueryReportImportsArgs = {
+  cloudAccountId: Scalars["ID"]["input"];
+  showCompleted?: InputMaybe<Scalars["Boolean"]["input"]>;
+};
+
 export type QueryResourceCountBreakdownArgs = {
   organizationId: Scalars["ID"]["input"];
   params?: InputMaybe<BreakdownParams>;
 };
 
+export type QueryResourceDuplicatesArgs = {
+  cloudAccountId: Scalars["ID"]["input"];
+};
+
+export type ReportImport = {
+  __typename?: "ReportImport";
+  cloud_account_id: Scalars["String"]["output"];
+  created_at: Scalars["Int"]["output"];
+  deleted_at?: Maybe<Scalars["Int"]["output"]>;
+  details?: Maybe<Scalars["JSONObject"]["output"]>;
+  id: Scalars["String"]["output"];
+  import_file?: Maybe<Scalars["String"]["output"]>;
+  is_recalculation?: Maybe<Scalars["Boolean"]["output"]>;
+  state: Scalars["String"]["output"];
+  state_reason?: Maybe<Scalars["String"]["output"]>;
+  updated_at?: Maybe<Scalars["Int"]["output"]>;
+};
+
 export type ResourceCountBreakdown = {
   __typename?: "ResourceCountBreakdown";
   breakdown: Scalars["JSONObject"]["output"];
-  breakdown_by: BreakdownBy;
+  breakdown_by: Scalars["String"]["output"];
   count: Scalars["Int"]["output"];
   counts: Scalars["JSONObject"]["output"];
   end_date: Scalars["Int"]["output"];
@@ -1016,9 +1009,73 @@ export type ResourceCountBreakdown = {
   start_date: Scalars["Int"]["output"];
 };
 
+export type ResourceDuplicateGroup = {
+  __typename?: "ResourceDuplicateGroup";
+  cloud_account_id: Scalars["String"]["output"];
+  cloud_account_name?: Maybe<Scalars["String"]["output"]>;
+  cloud_resource_id: Scalars["String"]["output"];
+  count: Scalars["Int"]["output"];
+  resources: Array<ResourceDuplicateResource>;
+};
+
+export type ResourceDuplicateResource = {
+  __typename?: "ResourceDuplicateResource";
+  cloud_account_id: Scalars["String"]["output"];
+  id: Scalars["String"]["output"];
+  name?: Maybe<Scalars["String"]["output"]>;
+  resource_type?: Maybe<Scalars["String"]["output"]>;
+};
+
+export type ResourceDuplicates = {
+  __typename?: "ResourceDuplicates";
+  checked_at: Scalars["Int"]["output"];
+  cloud_account_id: Scalars["String"]["output"];
+  count: Scalars["Int"]["output"];
+  duplicate_groups: Array<ResourceDuplicateGroup>;
+};
+
 export type ScheduleGeminiDataPreparation = {
   __typename?: "ScheduleGeminiDataPreparation";
   id: Scalars["ID"]["output"];
+};
+
+export type SnowflakeConfig = {
+  __typename?: "SnowflakeConfig";
+  account?: Maybe<Scalars["String"]["output"]>;
+  backup_warehouse?: Maybe<Scalars["String"]["output"]>;
+  billing_source?: Maybe<Scalars["String"]["output"]>;
+  region?: Maybe<Scalars["String"]["output"]>;
+  role?: Maybe<Scalars["String"]["output"]>;
+  user?: Maybe<Scalars["String"]["output"]>;
+  warehouse?: Maybe<Scalars["String"]["output"]>;
+};
+
+export type SnowflakeConfigInput = {
+  account: Scalars["String"]["input"];
+  backup_warehouse?: InputMaybe<Scalars["String"]["input"]>;
+  billing_source?: InputMaybe<Scalars["String"]["input"]>;
+  private_key?: InputMaybe<Scalars["String"]["input"]>;
+  role?: InputMaybe<Scalars["String"]["input"]>;
+  user: Scalars["String"]["input"];
+  warehouse: Scalars["String"]["input"];
+};
+
+export type SnowflakeDataSource = DataSourceInterface & {
+  __typename?: "SnowflakeDataSource";
+  account_id: Scalars["String"]["output"];
+  config?: Maybe<SnowflakeConfig>;
+  created_at?: Maybe<Scalars["Int"]["output"]>;
+  details?: Maybe<DataSourceDetails>;
+  id: Scalars["String"]["output"];
+  last_getting_metric_attempt_at: Scalars["Int"]["output"];
+  last_getting_metric_attempt_error?: Maybe<Scalars["String"]["output"]>;
+  last_getting_metrics_at: Scalars["Int"]["output"];
+  last_import_at: Scalars["Int"]["output"];
+  last_import_attempt_at: Scalars["Int"]["output"];
+  last_import_attempt_error?: Maybe<Scalars["String"]["output"]>;
+  name: Scalars["String"]["output"];
+  parent_id?: Maybe<Scalars["String"]["output"]>;
+  type: DataSourceType;
 };
 
 export type StripeSession = {
@@ -1042,7 +1099,6 @@ export type UpdateDataSourceInput = {
   azureSubscriptionConfig?: InputMaybe<AzureSubscriptionConfigInput>;
   azureTenantConfig?: InputMaybe<AzureTenantConfigInput>;
   databricksConfig?: InputMaybe<DatabricksConfigInput>;
-  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
   gcpConfig?: InputMaybe<GcpConfigInput>;
   gcpTenantConfig?: InputMaybe<GcpTenantConfigInput>;
   k8sConfig?: InputMaybe<K8sConfigInput>;
@@ -1050,6 +1106,7 @@ export type UpdateDataSourceInput = {
   lastImportModifiedAt?: InputMaybe<Scalars["Int"]["input"]>;
   name?: InputMaybe<Scalars["String"]["input"]>;
   nebiusConfig?: InputMaybe<NebiusConfigInput>;
+  snowflakeConfig?: InputMaybe<SnowflakeConfigInput>;
 };
 
 export type UpdateEmployeeEmailInput = {
@@ -1114,6 +1171,7 @@ export type GcpDataSourceConfigFragmentFragment = {
       __typename?: "GcpBillingDataConfig";
       dataset_name: string;
       table_name: string;
+      resource_table_name?: string | null;
       project_id?: string | null;
     } | null;
     pricing_data?: {
@@ -1133,6 +1191,7 @@ export type GcpTenantDataSourceConfigFragmentFragment = {
       __typename?: "GcpTenantBillingDataConfig";
       dataset_name: string;
       table_name: string;
+      resource_table_name?: string | null;
       project_id?: string | null;
     } | null;
     pricing_data?: {
@@ -1165,6 +1224,20 @@ export type NebiusDataSourceConfigFragmentFragment = {
 export type DatabricksDataSourceConfigFragmentFragment = {
   __typename?: "DatabricksDataSource";
   config?: { __typename?: "DatabricksConfig"; account_id?: string | null; client_id?: string | null } | null;
+};
+
+export type SnowflakeDataSourceConfigFragmentFragment = {
+  __typename?: "SnowflakeDataSource";
+  config?: {
+    __typename?: "SnowflakeConfig";
+    account?: string | null;
+    user?: string | null;
+    role?: string | null;
+    warehouse?: string | null;
+    backup_warehouse?: string | null;
+    billing_source?: string | null;
+    region?: string | null;
+  } | null;
 };
 
 export type K8sDataSourceConfigFragmentFragment = {
@@ -1255,6 +1328,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: { __typename?: "AlibabaConfig"; access_key_id?: string | null } | null;
       }
@@ -1280,6 +1357,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: {
           __typename?: "AwsConfig";
@@ -1318,6 +1399,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: {
           __typename?: "AzureSubscriptionConfig";
@@ -1352,6 +1437,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: { __typename?: "AzureTenantConfig"; client_id?: string | null; tenant?: string | null } | null;
       }
@@ -1377,6 +1466,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: { __typename?: "DatabricksConfig"; account_id?: string | null; client_id?: string | null } | null;
       }
@@ -1402,6 +1495,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
       }
     | {
@@ -1426,6 +1523,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: {
           __typename?: "GcpConfig";
@@ -1433,6 +1534,7 @@ export type DataSourcesQuery = {
             __typename?: "GcpBillingDataConfig";
             dataset_name: string;
             table_name: string;
+            resource_table_name?: string | null;
             project_id?: string | null;
           } | null;
           pricing_data?: {
@@ -1465,6 +1567,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: {
           __typename?: "GcpTenantConfig";
@@ -1472,6 +1578,7 @@ export type DataSourcesQuery = {
             __typename?: "GcpTenantBillingDataConfig";
             dataset_name: string;
             table_name: string;
+            resource_table_name?: string | null;
             project_id?: string | null;
           } | null;
           pricing_data?: {
@@ -1504,6 +1611,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: {
           __typename?: "K8sConfig";
@@ -1534,6 +1645,10 @@ export type DataSourcesQuery = {
           last_month_cost?: number | null;
           total_cost?: number | null;
           total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
         } | null;
         config?: {
           __typename?: "NebiusConfig";
@@ -1543,6 +1658,44 @@ export type DataSourcesQuery = {
           access_key_id?: string | null;
           bucket_name?: string | null;
           bucket_prefix?: string | null;
+        } | null;
+      }
+    | {
+        __typename?: "SnowflakeDataSource";
+        account_id: string;
+        created_at?: number | null;
+        id: string;
+        last_getting_metric_attempt_at: number;
+        last_getting_metric_attempt_error?: string | null;
+        last_getting_metrics_at: number;
+        last_import_at: number;
+        last_import_attempt_at: number;
+        last_import_attempt_error?: string | null;
+        name: string;
+        parent_id?: string | null;
+        type: DataSourceType;
+        details?: {
+          __typename?: "DataSourceDetails";
+          cost: number;
+          resources: number;
+          forecast: number;
+          last_month_cost?: number | null;
+          total_cost?: number | null;
+          total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
+        } | null;
+        config?: {
+          __typename?: "SnowflakeConfig";
+          account?: string | null;
+          user?: string | null;
+          role?: string | null;
+          warehouse?: string | null;
+          backup_warehouse?: string | null;
+          billing_source?: string | null;
+          region?: string | null;
         } | null;
       }
     | null
@@ -1576,9 +1729,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1614,9 +1771,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1665,9 +1826,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1712,9 +1877,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1750,9 +1919,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1788,9 +1961,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1825,9 +2002,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1848,6 +2029,7 @@ export type DataSourceQuery = {
             __typename?: "GcpBillingDataConfig";
             dataset_name: string;
             table_name: string;
+            resource_table_name?: string | null;
             project_id?: string | null;
           } | null;
           pricing_data?: {
@@ -1877,9 +2059,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1900,6 +2086,7 @@ export type DataSourceQuery = {
             __typename?: "GcpTenantBillingDataConfig";
             dataset_name: string;
             table_name: string;
+            resource_table_name?: string | null;
             project_id?: string | null;
           } | null;
           pricing_data?: {
@@ -1929,9 +2116,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1972,9 +2163,13 @@ export type DataSourceQuery = {
           cost: number;
           forecast: number;
           last_month_cost?: number | null;
+          resources: number;
           total_cost?: number | null;
           total_resources?: number | null;
-          resources: number;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
           discovery_infos?: Array<{
             __typename?: "DataSourceDiscoveryInfos";
             cloud_account_id: string;
@@ -1999,7 +2194,106 @@ export type DataSourceQuery = {
           bucket_prefix?: string | null;
         } | null;
       }
+    | {
+        __typename?: "SnowflakeDataSource";
+        account_id: string;
+        created_at?: number | null;
+        id: string;
+        last_getting_metric_attempt_at: number;
+        last_getting_metric_attempt_error?: string | null;
+        last_getting_metrics_at: number;
+        last_import_at: number;
+        last_import_attempt_at: number;
+        last_import_attempt_error?: string | null;
+        name: string;
+        parent_id?: string | null;
+        type: DataSourceType;
+        details?: {
+          __typename?: "DataSourceDetails";
+          cost: number;
+          forecast: number;
+          last_month_cost?: number | null;
+          resources: number;
+          total_cost?: number | null;
+          total_resources?: number | null;
+          billing_period_start?: number | null;
+          billing_period_end?: number | null;
+          duplicate_groups?: number | null;
+          cost_mismatch?: boolean | null;
+          discovery_infos?: Array<{
+            __typename?: "DataSourceDiscoveryInfos";
+            cloud_account_id: string;
+            created_at: number;
+            deleted_at: number;
+            enabled?: boolean | null;
+            id: string;
+            last_discovery_at: number;
+            last_error?: string | null;
+            last_error_at: number;
+            observe_time: number;
+            resource_type?: string | null;
+          } | null> | null;
+        } | null;
+        config?: {
+          __typename?: "SnowflakeConfig";
+          account?: string | null;
+          user?: string | null;
+          role?: string | null;
+          warehouse?: string | null;
+          backup_warehouse?: string | null;
+          billing_source?: string | null;
+          region?: string | null;
+        } | null;
+      }
     | null;
+};
+
+export type ReportImportsQueryVariables = Exact<{
+  cloudAccountId: Scalars["ID"]["input"];
+  showCompleted?: InputMaybe<Scalars["Boolean"]["input"]>;
+}>;
+
+export type ReportImportsQuery = {
+  __typename?: "Query";
+  reportImports: Array<{
+    __typename?: "ReportImport";
+    id: string;
+    cloud_account_id: string;
+    created_at: number;
+    updated_at?: number | null;
+    state: string;
+    state_reason?: string | null;
+    is_recalculation?: boolean | null;
+    details?: Record<string, unknown> | null;
+  }>;
+};
+
+export type ResourceDuplicatesQueryVariables = Exact<{
+  cloudAccountId: Scalars["ID"]["input"];
+}>;
+
+export type ResourceDuplicatesQuery = {
+  __typename?: "Query";
+  resourceDuplicates: {
+    __typename?: "ResourceDuplicates";
+    cloud_account_id: string;
+    count: number;
+    checked_at: number;
+    duplicate_groups: Array<{
+      __typename?: "ResourceDuplicateGroup";
+      cloud_account_id: string;
+      cloud_account_name?: string | null;
+      cloud_resource_id: string;
+      count: number;
+      resources: Array<{
+        __typename?: "ResourceDuplicateResource";
+        id: string;
+        name?: string | null;
+        resource_type?: string | null;
+        cloud_account_id: string;
+      }>;
+    }>;
+  };
 };
 
 export type InvitationsQueryVariables = Exact<{ [key: string]: never }>;
@@ -2089,6 +2383,7 @@ export type CreateDataSourceMutation = {
     | { __typename?: "GcpTenantDataSource"; id: string; name: string }
     | { __typename?: "K8sDataSource"; id: string; name: string }
     | { __typename?: "NebiusDataSource"; id: string; name: string }
+    | { __typename?: "SnowflakeDataSource"; id: string; name: string }
     | null;
 };
 
@@ -2262,6 +2557,7 @@ export type UpdateDataSourceMutation = {
             __typename?: "GcpBillingDataConfig";
             dataset_name: string;
             table_name: string;
+            resource_table_name?: string | null;
             project_id?: string | null;
           } | null;
           pricing_data?: {
@@ -2296,6 +2592,21 @@ export type UpdateDataSourceMutation = {
           access_key_id?: string | null;
           bucket_name?: string | null;
           bucket_prefix?: string | null;
+        } | null;
+      }
+    | {
+        __typename?: "SnowflakeDataSource";
+        id: string;
+        name: string;
+        config?: {
+          __typename?: "SnowflakeConfig";
+          account?: string | null;
+          user?: string | null;
+          role?: string | null;
+          warehouse?: string | null;
+          backup_warehouse?: string | null;
+          billing_source?: string | null;
+          region?: string | null;
         } | null;
       }
     | null;
@@ -2532,6 +2843,7 @@ export const GcpDataSourceConfigFragmentFragmentDoc = gql`
       billing_data {
         dataset_name
         table_name
+        resource_table_name
         project_id
       }
       pricing_data {
@@ -2548,6 +2860,7 @@ export const GcpTenantDataSourceConfigFragmentFragmentDoc = gql`
       billing_data {
         dataset_name
         table_name
+        resource_table_name
         project_id
       }
       pricing_data {
@@ -2592,11 +2905,9 @@ export const SnowflakeDataSourceConfigFragmentFragmentDoc = gql`
       user
       role
       warehouse
+      backup_warehouse
       billing_source
-      cost_model {
-        credit_price
-        storage_price_per_tb_month
-      }
+      region
     }
   }
 `;
@@ -2887,6 +3198,8 @@ export const DataSourcesDocument = gql`
         total_resources
         billing_period_start
         billing_period_end
+        duplicate_groups
+        cost_mismatch
       }
       ...AwsDataSourceConfigFragment
       ...AzureTenantDataSourceConfigFragment
@@ -2997,6 +3310,8 @@ export const DataSourceDocument = gql`
         total_resources
         billing_period_start
         billing_period_end
+        duplicate_groups
+        cost_mismatch
       }
       ...AwsDataSourceConfigFragment
       ...AzureTenantDataSourceConfigFragment
@@ -3070,27 +3385,6 @@ export type DataSourceQueryResult = Apollo.QueryResult<DataSourceQuery, DataSour
 export function refetchDataSourceQuery(variables: DataSourceQueryVariables) {
   return { query: DataSourceDocument, variables: variables };
 }
-
-export type ReportImportsQueryVariables = Exact<{
-  cloudAccountId: Scalars["ID"]["input"];
-  showCompleted?: InputMaybe<Scalars["Boolean"]["input"]>;
-}>;
-
-export type ReportImportsQuery = {
-  __typename?: "Query";
-  reportImports: Array<{
-    __typename?: "ReportImport";
-    id: string;
-    cloud_account_id: string;
-    created_at: number;
-    updated_at?: number | null;
-    state: string;
-    state_reason?: string | null;
-    is_recalculation?: boolean | null;
-    details?: Record<string, unknown> | null;
-  }>;
-};
-
 export const ReportImportsDocument = gql`
   query ReportImports($cloudAccountId: ID!, $showCompleted: Boolean) {
     reportImports(cloudAccountId: $cloudAccountId, showCompleted: $showCompleted) {
@@ -3108,6 +3402,20 @@ export const ReportImportsDocument = gql`
 
 /**
  * __useReportImportsQuery__
+ *
+ * To run a query within a React component, call `useReportImportsQuery` and pass it any options that fit your needs.
+ * When your component renders, `useReportImportsQuery` returns an object from Apollo Client that contains loading, error, and data properties
+ * you can use to render your UI.
+ *
+ * @param baseOptions options that will be passed into the query, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options;
+ *
+ * @example
+ * const { data, loading, error } = useReportImportsQuery({
+ *   variables: {
+ *      cloudAccountId: // value for 'cloudAccountId'
+ *      showCompleted: // value for 'showCompleted'
+ *   },
+ * });
  */
 export function useReportImportsQuery(
   baseOptions: Apollo.QueryHookOptions<ReportImportsQuery, ReportImportsQueryVariables> &
@@ -3122,13 +3430,100 @@ export function useReportImportsLazyQuery(
   const options = { ...defaultOptions, ...baseOptions };
   return Apollo.useLazyQuery<ReportImportsQuery, ReportImportsQueryVariables>(ReportImportsDocument, options);
 }
+// @ts-ignore
+export function useReportImportsSuspenseQuery(
+  baseOptions?: Apollo.SuspenseQueryHookOptions<ReportImportsQuery, ReportImportsQueryVariables>
+): Apollo.UseSuspenseQueryResult<ReportImportsQuery, ReportImportsQueryVariables>;
+export function useReportImportsSuspenseQuery(
+  baseOptions?: Apollo.SkipToken | Apollo.SuspenseQueryHookOptions<ReportImportsQuery, ReportImportsQueryVariables>
+): Apollo.UseSuspenseQueryResult<ReportImportsQuery | undefined, ReportImportsQueryVariables>;
+export function useReportImportsSuspenseQuery(
+  baseOptions?: Apollo.SkipToken | Apollo.SuspenseQueryHookOptions<ReportImportsQuery, ReportImportsQueryVariables>
+) {
+  const options = baseOptions === Apollo.skipToken ? baseOptions : { ...defaultOptions, ...baseOptions };
+  return Apollo.useSuspenseQuery<ReportImportsQuery, ReportImportsQueryVariables>(ReportImportsDocument, options);
+}
 export type ReportImportsQueryHookResult = ReturnType<typeof useReportImportsQuery>;
 export type ReportImportsLazyQueryHookResult = ReturnType<typeof useReportImportsLazyQuery>;
+export type ReportImportsSuspenseQueryHookResult = ReturnType<typeof useReportImportsSuspenseQuery>;
 export type ReportImportsQueryResult = Apollo.QueryResult<ReportImportsQuery, ReportImportsQueryVariables>;
 export function refetchReportImportsQuery(variables: ReportImportsQueryVariables) {
   return { query: ReportImportsDocument, variables: variables };
 }
+export const ResourceDuplicatesDocument = gql`
+  query ResourceDuplicates($cloudAccountId: ID!) {
+    resourceDuplicates(cloudAccountId: $cloudAccountId) {
+      cloud_account_id
+      count
+      checked_at
+      duplicate_groups {
+        cloud_account_id
+        cloud_account_name
+        cloud_resource_id
+        count
+        resources {
+          id
+          name
+          resource_type
+          cloud_account_id
+        }
+      }
+    }
+  }
+`;
 
+/**
+ * __useResourceDuplicatesQuery__
+ *
+ * To run a query within a React component, call `useResourceDuplicatesQuery` and pass it any options that fit your needs.
+ * When your component renders, `useResourceDuplicatesQuery` returns an object from Apollo Client that contains loading, error, and data properties
+ * you can use to render your UI.
+ *
+ * @param baseOptions options that will be passed into the query, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options;
+ *
+ * @example
+ * const { data, loading, error } = useResourceDuplicatesQuery({
+ *   variables: {
+ *      cloudAccountId: // value for 'cloudAccountId'
+ *   },
+ * });
+ */
+export function useResourceDuplicatesQuery(
+  baseOptions: Apollo.QueryHookOptions<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables> &
+    ({ variables: ResourceDuplicatesQueryVariables; skip?: boolean } | { skip: boolean })
+) {
+  const options = { ...defaultOptions, ...baseOptions };
+  return Apollo.useQuery<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>(ResourceDuplicatesDocument, options);
+}
+export function useResourceDuplicatesLazyQuery(
+  baseOptions?: Apollo.LazyQueryHookOptions<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>
+) {
+  const options = { ...defaultOptions, ...baseOptions };
+  return Apollo.useLazyQuery<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>(ResourceDuplicatesDocument, options);
+}
+// @ts-ignore
+export function useResourceDuplicatesSuspenseQuery(
+  baseOptions?: Apollo.SuspenseQueryHookOptions<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>
+): Apollo.UseSuspenseQueryResult<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>;
+export function useResourceDuplicatesSuspenseQuery(
+  baseOptions?: Apollo.SkipToken | Apollo.SuspenseQueryHookOptions<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>
+): Apollo.UseSuspenseQueryResult<ResourceDuplicatesQuery | undefined, ResourceDuplicatesQueryVariables>;
+export function useResourceDuplicatesSuspenseQuery(
+  baseOptions?: Apollo.SkipToken | Apollo.SuspenseQueryHookOptions<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>
+) {
+  const options = baseOptions === Apollo.skipToken ? baseOptions : { ...defaultOptions, ...baseOptions };
+  return Apollo.useSuspenseQuery<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>(
+    ResourceDuplicatesDocument,
+    options
+  );
+}
+export type ResourceDuplicatesQueryHookResult = ReturnType<typeof useResourceDuplicatesQuery>;
+export type ResourceDuplicatesLazyQueryHookResult = ReturnType<typeof useResourceDuplicatesLazyQuery>;
+export type ResourceDuplicatesSuspenseQueryHookResult = ReturnType<typeof useResourceDuplicatesSuspenseQuery>;
+export type ResourceDuplicatesQueryResult = Apollo.QueryResult<ResourceDuplicatesQuery, ResourceDuplicatesQueryVariables>;
+export function refetchResourceDuplicatesQuery(variables: ResourceDuplicatesQueryVariables) {
+  return { query: ResourceDuplicatesDocument, variables: variables };
+}
 export const InvitationsDocument = gql`
   query Invitations {
     invitations {

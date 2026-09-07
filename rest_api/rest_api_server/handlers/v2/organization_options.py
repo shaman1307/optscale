@@ -63,8 +63,13 @@ class OrganizationOptionsAsyncCollectionHandler(BaseAsyncItemHandler, BaseAuthHa
         if not self.check_cluster_secret(raises=False):
             await self.check_permissions(
                 'INFO_ORGANIZATION', 'organization', organization_id)
+            include_secrets = False
+        else:
+            include_secrets = True
         with_values = self.get_arg('with_values', bool, False)
-        res = await run_task(self.controller.list, organization_id, with_values)
+        res = await run_task(
+            self.controller.list, organization_id, with_values,
+            include_secrets)
         option_dict = {'options': res}
         self.write(json.dumps(option_dict, cls=ModelEncoder))
 
@@ -121,7 +126,12 @@ class OrganizationOptionsAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
         if not self.check_cluster_secret(raises=False):
             await self.check_permissions(
                 'INFO_ORGANIZATION', 'organization', organization_id)
-        res = await run_task(self.controller.get_by_name, organization_id, option_name)
+            include_secrets = False
+        else:
+            include_secrets = True
+        res = await run_task(
+            self.controller.get_by_name, organization_id, option_name,
+            include_secrets)
         value_dict = {'value': res}
         self.write(json.dumps(value_dict, cls=ModelEncoder))
 

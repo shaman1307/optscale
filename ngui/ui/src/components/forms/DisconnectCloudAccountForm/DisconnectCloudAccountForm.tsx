@@ -4,7 +4,7 @@ import DeleteEntity from "components/DeleteEntity";
 import PageContentDescription from "components/PageContentDescription";
 import { useDataSources } from "hooks/useDataSources";
 import { useOrganizationActionRestrictions } from "hooks/useOrganizationActionRestrictions";
-import { AZURE_TENANT, GCP_TENANT } from "utils/constants";
+import { AZURE_TENANT, GCP_TENANT, SNOWFLAKE_TENANT } from "utils/constants";
 import { SPACING_1 } from "utils/layouts";
 import Survey from "./FormElements/Survey";
 import { DisconnectCloudAccountFormProps, FormValues } from "./types";
@@ -23,6 +23,7 @@ const DisconnectCloudAccountForm = ({
   const { disconnectQuestionId } = useDataSources(type);
   const isAzureTenant = type === AZURE_TENANT;
   const isGcpTenant = type === GCP_TENANT;
+  const isSnowflakeTenant = type === SNOWFLAKE_TENANT;
 
   const methods = useForm<FormValues>({ defaultValues: getDefaultValues() });
   const { handleSubmit } = methods;
@@ -30,7 +31,7 @@ const DisconnectCloudAccountForm = ({
   return (
     <FormProvider {...methods}>
       <form data-test-id="disconnect-datasource-form" onSubmit={handleSubmit(onSubmit)} noValidate>
-        {(parentId || isAzureTenant || isGcpTenant) && (
+        {(parentId || isAzureTenant || isGcpTenant || isSnowflakeTenant) && (
           <Box mb={SPACING_1}>
             {parentId && (
               <PageContentDescription
@@ -40,7 +41,7 @@ const DisconnectCloudAccountForm = ({
                 }}
               />
             )}
-            {isAzureTenant || isGcpTenant ? (
+            {isAzureTenant || isGcpTenant || isSnowflakeTenant ? (
               <PageContentDescription
                 position="top"
                 alertProps={{

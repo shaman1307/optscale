@@ -54,6 +54,7 @@ class ResourcesSaver:
         self.recording_available = Event()
         self.empty = Event()
         self._proc = None
+        self._errors = []
         self.start()
 
     def __del__(self):
@@ -82,6 +83,17 @@ class ResourcesSaver:
     def resume(self):
         self.recording_available.set()
 
+    def clear_errors(self):
+        self._errors = []
+
+    def pop_errors(self):
+        errors = list(self._errors)
+        self._errors = []
+        return errors
+
+    def _record_error(self, message):
+        self._errors.append(str(message)[:1024])
+
     def send(self, chunk):
         try:
             recording_available = self.recording_available.wait(
@@ -89,10 +101,14 @@ class ResourcesSaver:
             if recording_available:
                 self.queue.put(chunk, timeout=self.timeout)
             else:
-                LOG.exception('Failed to add a chunk to the queue: '
-                              'writing paused, timeout exceeded')
+                msg = ('Failed to add a chunk to the queue: '
+                       'writing paused, timeout exceeded')
+                LOG.exception(msg)
+                self._record_error(msg)
         except queue.Full as exc:
-            LOG.exception('Failed to add a chunk to the queue: %s', str(exc))
+            msg = 'Failed to add a chunk to the queue: %s' % str(exc)
+            LOG.exception(msg)
+            self._record_error(msg)
 
     @property
     def proc(self):
@@ -115,6 +131,7 @@ class ResourcesSaver:
                 self.empty.set()
             except Exception as exc:
                 LOG.warning('Failed to save a chunk: %s', str(exc))
+                self._record_error(exc)
 
     @staticmethod
     def get_resource_type_model(resource_type):
@@ -346,11 +363,19 @@ class DiscoveryWorker(ConsumerMixin):
                      'skipped due to disabled organization.', cloud_acc_id,
                      resource_type)
             return
+        adapter = CloudAdapter.get_adapter(config)
+        if not adapter.discovery_calls_map():
+            # Billing-only virtual CAs (e.g. GCP __gcp_svc__*) have nothing to
+            # discover — do not call cloud APIs.
+            LOG.info('Discover of cloud account id %s skipped: no discovery '
+                     'calls for this cloud account config.', cloud_acc_id)
+            return
         gen_list = self.discover(config, resource_type)
         discovered_resources = set()
         resources_count = 0
         max_parallel_requests = self.max_parallel_requests(config)
         errors = set()
+        self.res_saving.clear_errors()
         for i in range(0, len(gen_list), max_parallel_requests):
             gen_list_chunk = gen_list[i:i + max_parallel_requests]
             while gen_list_chunk:
@@ -387,11 +412,23 @@ class DiscoveryWorker(ConsumerMixin):
         LOG.info("%s %s resources have been discovered for cloud %s",
                  resources_count, resource_type, cloud_acc_id)
         self.res_saving.pause()
-        if not self.res_saving.is_finished:
-            LOG.warning('The timeout for writing %s resources for the'
-                        ' cloud account %s has been exceeded',
-                        resource_type, cloud_acc_id)
+        write_finished = self.res_saving.is_finished
+        save_errors = self.res_saving.pop_errors()
         self.res_saving.resume()
+        if not write_finished:
+            msg = (
+                'Failed to save discovered resources into existing billing '
+                'document: write timeout exceeded for %s on cloud account %s'
+                % (resource_type, cloud_acc_id))
+            LOG.error(msg)
+            raise Exception(msg)
+        if save_errors:
+            msg = (
+                'Failed to save discovered resources into existing billing '
+                'document: %s' % save_errors[0])
+            LOG.error('%s discovery save failed for cloud %s with errors %s',
+                      resource_type, cloud_acc_id, save_errors)
+            raise Exception(msg)
         if errors:
             LOG.error('%s discovery call failed for cloud %s with errors %s',
                       resource_type, cloud_acc_id, errors)
@@ -399,6 +436,13 @@ class DiscoveryWorker(ConsumerMixin):
         self._update_discovery_info(
             cloud_acc_id, resource_type,
             last_discovery_at=int(start_time.timestamp()))
+        if config.get('type') in ('gcp_cnr', 'gcp_tenant'):
+            try:
+                self.rest_cl.resource_duplicates_refresh(cloud_acc_id)
+            except Exception as exc:
+                LOG.warning(
+                    'Resource duplicates refresh failed for cloud account %s: %s',
+                    cloud_acc_id, str(exc))
         LOG.info('%s discovery for cloud_account %s completed in %s',
                  resource_type, cloud_acc_id,
                  (utcnow() - start_time).total_seconds())

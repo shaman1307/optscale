@@ -53,7 +53,8 @@ class TestCloudResourceApi(TestApiBase):
         _, self.cloud_acc1 = self.create_cloud_account(self.org1_id,
                                                        aws_cloud_acc, auth_user_id=self.auth_user_1)
         _, cloud_rules = self.client.rules_list(self.org1_id)
-        self.set_allowed_pair(self.auth_user_1, cloud_rules['rules'][0]['pool_id'])
+        self.cloud_acc1_pool_id = cloud_rules['rules'][0]['pool_id']
+        self.set_allowed_pair(self.auth_user_1, self.cloud_acc1_pool_id)
         _, self.cloud_acc2 = self.create_cloud_account(self.org2_id,
                                                        aws_cloud_acc, auth_user_id=self.auth_user_2)
         _, cloud_rules = self.client.rules_list(self.org2_id)
@@ -383,6 +384,46 @@ class TestCloudResourceApi(TestApiBase):
 
         _, result = self.client.cloud_resource_list(self.cloud_acc1_id)
         self.assertEqual(len(result['resources']), 1)
+
+    def test_skip_existing_prefers_live_over_deleted_twin(self):
+        crid = 'gke/cluster-1'
+        live_id = self.gen_id()
+        deleted_id = self.gen_id()
+        self.mongo_client.restapi.resources.insert_one({
+            '_id': live_id,
+            'cloud_account_id': self.cloud_acc1_id,
+            'cloud_resource_id': crid,
+            'name': 'live',
+            'resource_type': 'GKE',
+            'deleted_at': 0,
+        })
+        self.mongo_client.restapi.resources.insert_one({
+            '_id': deleted_id,
+            'cloud_account_id': self.cloud_acc1_id,
+            'cloud_resource_id': crid,
+            'name': 'old',
+            'resource_type': 'GKE',
+            'deleted_at': 1786739425,
+        })
+        code, result = self.cloud_resource_create_bulk(
+            self.cloud_acc1_id,
+            {'resources': [{
+                'cloud_resource_id': crid,
+                'name': 'from-import',
+                'resource_type': 'GKE',
+            }]},
+            return_resources=True, is_report_import=True,
+            behavior='skip_existing')
+        self.assertEqual(code, 200)
+        self.assertEqual(len(result['resources']), 1)
+        self.assertEqual(result['resources'][0]['id'], live_id)
+        docs = list(self.mongo_client.restapi.resources.find({
+            'cloud_resource_id': crid,
+        }))
+        self.assertEqual(len(docs), 2)
+        deleted = next(doc for doc in docs if doc['_id'] == deleted_id)
+        self.assertEqual(deleted['deleted_at'], 1786739425)
+        self.assertEqual(deleted['name'], 'old')
 
     def test_skip_existing(self):
         code, result = self.cloud_resource_create_bulk(
@@ -969,7 +1010,8 @@ class TestCloudResourceApi(TestApiBase):
         cluster = list(self.resources_collection.find({'_id': cluster_id}))
         self.assertEqual(len(cluster), 1)
         cluster = cluster[0]
-        self.assertIsNone(cluster.get('cloud_account_id'))
+        self.assertEqual(cluster.get('cloud_account_id'), self.cloud_acc1_id)
+        self.assertEqual(cluster.get('pool_id'), self.cloud_acc1_pool_id)
         self.assertIsNone(cluster.get('region'))
         self.assertIsNone(cluster.get('name'))
         self.assertIsNone(cluster.get('cloud_console_link'))
@@ -1020,6 +1062,47 @@ class TestCloudResourceApi(TestApiBase):
                 cluster_id = rss.get('cluster_id')
         self.assertIsNotNone(cluster_id)
         self._check_cluster(ct, cluster_id, 'tv')
+
+    def test_cluster_cloud_account_id_majority(self):
+        code, _ = self.client.cluster_type_create(
+            self.org1_id, {'name': 'my_ct', 'tag_key': 'tn'})
+        self.assertEqual(code, 201)
+        aws_cloud_acc = {
+            'name': 'second cloud_acc',
+            'type': 'aws_cnr',
+            'config': {
+                'access_key_id': 'key2',
+                'secret_access_key': 'secret2',
+                'config_scheme': 'create_report'
+            }
+        }
+        _, cloud_acc3 = self.create_cloud_account(
+            self.org1_id, aws_cloud_acc, auth_user_id=self.auth_user_1)
+        code, res1 = self.cloud_resource_create_bulk(
+            self.cloud_acc1_id,
+            {'resources': [
+                {'cloud_resource_id': 'res_a', 'name': 'a',
+                 'resource_type': 'test', 'tags': {'tn': 'tv'}},
+                {'cloud_resource_id': 'res_b', 'name': 'b',
+                 'resource_type': 'test', 'tags': {'tn': 'tv'}},
+            ]},
+            return_resources=True, behavior='update_existing')
+        self.assertEqual(code, 200)
+        code, res2 = self.cloud_resource_create_bulk(
+            cloud_acc3['id'],
+            {'resources': [
+                {'cloud_resource_id': 'res_c', 'name': 'c',
+                 'resource_type': 'test', 'tags': {'tn': 'tv'}},
+            ]},
+            return_resources=True, behavior='update_existing')
+        self.assertEqual(code, 200)
+        cluster_ids = {
+            rss.get('cluster_id')
+            for rss in res1['resources'] + res2['resources']
+            if rss.get('cluster_id')}
+        self.assertEqual(len(cluster_ids), 1)
+        cluster = self.resources_collection.find_one({'_id': list(cluster_ids)[0]})
+        self.assertEqual(cluster.get('cloud_account_id'), self.cloud_acc1_id)
 
     def test_clustered_priority(self):
         code, ct = self.client.cluster_type_create(
@@ -1658,3 +1741,87 @@ class TestCloudResourceApi(TestApiBase):
             self.assertEqual(r['last_seen'], int(ls.timestamp()))
             self.assertEqual(r['_first_seen_date'], datetime(2022, 5, 5))
             self.assertEqual(r['_last_seen_date'], datetime(2023, 5, 5))
+
+    def test_gcp_dataproc_members_collapse_to_one_resource(self):
+        uuid_ = '5fcf5527-4bb6-4991-82f4-55b339a0a2af'
+        tags = {
+            'goog-dataproc-cluster-uuid': uuid_,
+            'goog-dataproc-cluster-name': 'dataproc',
+        }
+        body = {
+            'resources': [
+                {
+                    'cloud_resource_id': '111',
+                    'name': 'dataproc-sw-aaa',
+                    'resource_type': 'Instance',
+                    'tags': tags,
+                    'active': True,
+                },
+                {
+                    'cloud_resource_id': '222',
+                    'name': 'dataproc-sw-aaa',
+                    'resource_type': 'Volume',
+                    'tags': dict(tags),
+                    'active': True,
+                },
+            ]
+        }
+        code, res = self.cloud_resource_create_bulk(
+            self.cloud_acc1_id, body, return_resources=True,
+            behavior='update_existing')
+        self.assertEqual(code, 200)
+        self.assertEqual(len(res['resources']), 1)
+        created = res['resources'][0]
+        self.assertEqual(created['cloud_resource_id'], 'dataproc/%s' % uuid_)
+        self.assertEqual(created['resource_type'], 'Dataproc')
+        self.assertEqual(created['name'], 'dataproc')
+        self.assertEqual(created['cloud_account_id'], self.cloud_acc1_id)
+        stored = list(self.resources_collection.find({
+            'cloud_account_id': self.cloud_acc1_id,
+            'cloud_resource_id': 'dataproc/%s' % uuid_,
+            'deleted_at': 0,
+        }))
+        self.assertEqual(len(stored), 1)
+
+    def test_gcp_serverless_dataproc_collapses_by_dag(self):
+        body = {
+            'resources': [
+                {
+                    'cloud_resource_id': 'dataproc/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    'name': 'srvls-batch-aaa',
+                    'resource_type': 'Dataproc',
+                    'tags': {
+                        'goog-dataproc-cluster-uuid': (
+                            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+                        'goog-dataproc-cluster-name': 'srvls-batch-aaa',
+                        'goog-dataproc-batch-uuid': 'aaa',
+                        'airflow-dag-id': 'sim_dataset_processing_prod',
+                    },
+                    'active': False,
+                },
+                {
+                    'cloud_resource_id': 'dataproc/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                    'name': 'srvls-batch-bbb',
+                    'resource_type': 'Dataproc',
+                    'tags': {
+                        'goog-dataproc-cluster-uuid': (
+                            'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
+                        'goog-dataproc-cluster-name': 'srvls-batch-bbb',
+                        'goog-dataproc-batch-uuid': 'bbb',
+                        'airflow-dag-id': 'sim_dataset_processing_prod',
+                    },
+                    'active': False,
+                },
+            ]
+        }
+        code, res = self.cloud_resource_create_bulk(
+            self.cloud_acc1_id, body, return_resources=True,
+            behavior='update_existing')
+        self.assertEqual(code, 200)
+        self.assertEqual(len(res['resources']), 1)
+        created = res['resources'][0]
+        self.assertEqual(
+            created['cloud_resource_id'],
+            'dataproc/dag/sim_dataset_processing_prod')
+        self.assertEqual(created['name'], 'sim_dataset_processing_prod')
+        self.assertEqual(created['resource_type'], 'Dataproc')

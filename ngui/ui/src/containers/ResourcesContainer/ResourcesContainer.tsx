@@ -22,9 +22,11 @@ import {
   EXPENSES_LIMIT_FILTER_DEFAULT_VALUE,
   CLEAN_EXPENSES_BREAKDOWN_TYPES,
   CLEAN_EXPENSES_BREAKDOWN_TYPES_LIST,
+  INVOICE_MONTHS_FILTER,
 } from "utils/constants";
 import { getCurrentMonthRange } from "utils/datetime";
 import { getSearchParams, removeSearchParam, updateSearchParams } from "utils/network";
+import { COST_PERIOD_BILLING, COST_PERIOD_DATE, normalizeInvoiceMonths } from "utils/costPeriod";
 
 const useDateRange = () => {
   const { rootData: storageRangeDates = {} } = useRootData(RANGE_DATES, (result = {}) => result[DATE_RANGE_TYPE.RESOURCES]);
@@ -64,6 +66,13 @@ const useDateRange = () => {
   });
 
   return [dateRange, setDateRange] as const;
+};
+
+const useInvoiceMonths = () => {
+  const [invoiceMonths, setInvoiceMonths] = useState(() =>
+    normalizeInvoiceMonths(getSearchParams()[INVOICE_MONTHS_FILTER])
+  );
+  return [invoiceMonths, setInvoiceMonths] as const;
 };
 
 const useListenForPerspectiveChange = (selectedPerspectiveDefinition) => {
@@ -122,6 +131,10 @@ const ResourcesContainer = () => {
   const { validPerspectives } = useOrganizationPerspectives();
 
   const [dateRange, setDateRange] = useDateRange();
+  const [invoiceMonths, setInvoiceMonths] = useInvoiceMonths();
+  const [periodType, setPeriodType] = useState(() =>
+    invoiceMonths.length ? COST_PERIOD_BILLING : COST_PERIOD_DATE
+  );
 
   const [breakdownByState, setBreakdownByState] = useState(() => {
     const { [RESOURCES_BREAKDOWN_BY_QUERY_PARAMETER_NAME]: breakdownBy } = getSearchParams();
@@ -159,35 +172,77 @@ const ResourcesContainer = () => {
         startDate: dateRange.startDate,
         endDate: dateRange.endDate,
       },
+      invoiceMonths,
+      periodType,
       filters: apiFilterParams,
     };
-  }, [dateRange, appliedFilters]);
+  }, [dateRange, appliedFilters, invoiceMonths, periodType]);
 
-  const flatRequestParams = useMemo(
-    () => ({
+  const flatRequestParams = useMemo(() => {
+    const billingParams =
+      periodType === COST_PERIOD_BILLING && invoiceMonths.length ? { [INVOICE_MONTHS_FILTER]: invoiceMonths } : {};
+    return {
       ...requestParams.filters,
-      ...requestParams.dateRange,
+      startDate: dateRange.startDate,
+      endDate: dateRange.endDate,
+      ...billingParams,
+      periodType,
       limit: requestParams.limit,
-    }),
-    [requestParams]
-  );
+    };
+  }, [requestParams, periodType, invoiceMonths, dateRange]);
 
   useEffect(() => {
-    updateSearchParams(requestParams.dateRange);
-  }, [requestParams.dateRange]);
+    if (periodType === COST_PERIOD_BILLING) {
+      updateSearchParams({
+        [INVOICE_MONTHS_FILTER]: invoiceMonths,
+        startDate: null,
+        endDate: null,
+      });
+      return;
+    }
+    updateSearchParams({
+      ...requestParams.dateRange,
+      [INVOICE_MONTHS_FILTER]: null,
+    });
+  }, [requestParams.dateRange, periodType, invoiceMonths]);
+
+  const filterPeriodParams =
+    periodType === COST_PERIOD_BILLING && invoiceMonths.length
+      ? { invoice_months: invoiceMonths }
+      : {
+          start_date: dateRange.startDate,
+          end_date: dateRange.endDate,
+        };
 
   const { data: availableFiltersData, loading: isAvailableFiltersLoading } = useAvailableFiltersQuery({
+    skip:
+      !organizationId ||
+      (periodType === COST_PERIOD_BILLING ? invoiceMonths.length === 0 : dateRange.startDate == null),
     variables: {
       organizationId,
       params: {
-        start_date: dateRange.startDate,
-        end_date: dateRange.endDate,
+        ...filterPeriodParams,
+        facets: "core,virtual_tag",
       },
     },
   });
 
-  const onApplyDateRange = (dateRange) => {
-    setDateRange(dateRange);
+  const onApplyDateRange = (nextRange) => {
+    setPeriodType(COST_PERIOD_DATE);
+    setInvoiceMonths([]);
+    setDateRange(nextRange);
+  };
+
+  const onPeriodTypeChange = (nextType) => {
+    setPeriodType(nextType);
+    if (nextType === COST_PERIOD_DATE) {
+      setInvoiceMonths([]);
+    }
+  };
+
+  const onInvoiceMonthsChange = (months) => {
+    setPeriodType(COST_PERIOD_BILLING);
+    setInvoiceMonths(months);
   };
 
   const onPerspectiveApply = (newPerspectiveName) => {
@@ -202,6 +257,10 @@ const ResourcesContainer = () => {
     <Resources
       startDateTimestamp={dateRange.startDate}
       endDateTimestamp={dateRange.endDate}
+      periodType={periodType}
+      invoiceMonths={invoiceMonths}
+      onPeriodTypeChange={onPeriodTypeChange}
+      onInvoiceMonthsChange={onInvoiceMonthsChange}
       filterValues={availableFiltersData?.availableFilters ?? {}}
       onApply={onApplyDateRange}
       requestParams={flatRequestParams}

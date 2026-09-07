@@ -3,7 +3,7 @@ import { Stack } from "@mui/material";
 import { FormattedMessage } from "react-intl";
 import KeyValueLabel from "components/KeyValueLabel/KeyValueLabel";
 import ResourcesPerspectiveFilters from "components/ResourcesPerspectiveFilters";
-import { breakdowns } from "hooks/useBreakdownBy";
+import { getBreakdownDisplayName } from "hooks/useBreakdownBy";
 import { CLEAN_EXPENSES_BREAKDOWN_TYPES } from "utils/constants";
 import { SPACING_1 } from "utils/layouts";
 import { getMetaFormattedName } from "utils/metadata";
@@ -19,7 +19,7 @@ import {
 const getExpensesBreakdownByRenderData = ({ breakdownBy, groupBy }: ExpensesBreakdownData): RenderDataItem[] => [
   {
     controlName: "categorizeBy",
-    renderValue: () => breakdowns.find((breakdown) => breakdown.value === breakdownBy)?.name ?? null,
+    renderValue: () => getBreakdownDisplayName(breakdownBy) ?? null,
   },
   {
     controlName: "groupBy",
@@ -38,7 +38,7 @@ const getExpensesBreakdownByRenderData = ({ breakdownBy, groupBy }: ExpensesBrea
 const getResourceCountBreakdownByRenderData = ({ breakdownBy }: ResourceCountBreakdownData): RenderDataItem[] => [
   {
     controlName: "categorizeBy",
-    renderValue: () => breakdowns.find((breakdown) => breakdown.value === breakdownBy)?.name ?? null,
+    renderValue: () => getBreakdownDisplayName(breakdownBy) ?? null,
   },
 ];
 

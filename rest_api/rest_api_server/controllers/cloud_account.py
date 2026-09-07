@@ -1,3 +1,4 @@
+import json
 import logging
 import etcd
 import re
@@ -9,13 +10,14 @@ from optscale_client.herald_client.client_v2 import Client as HeraldClient
 
 from sqlalchemy import Enum, true
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.sql import and_, exists, or_
+from sqlalchemy.sql import and_, exists, func
 from tools.cloud_adapter.exceptions import (
     InvalidParameterException, ReportConfigurationException,
     CloudSettingNotSupported, BucketNameValidationError,
     BucketPrefixValidationError, ReportNameValidationError,
     CloudConnectionError, S3ConnectionError)
 from tools.cloud_adapter.cloud import Cloud as CloudAdapter
+from tools.cloud_adapter.model import ResourceTypes
 
 from tools.optscale_exceptions.common_exc import (
     WrongArgumentsException, NotFoundException, ForbiddenException,
@@ -44,11 +46,15 @@ from rest_api.rest_api_server.controllers.report_import import (
     ExpensesRecalculationScheduleController,
     ReportImportBaseController
 )
+from rest_api.rest_api_server.controllers.resource_duplicates import (
+    ResourceDuplicatesController
+)
 from rest_api.rest_api_server.controllers.rule import RuleController
 from rest_api.rest_api_server.exceptions import Err
 from rest_api.rest_api_server.models.models import (
-    CloudAccount, DiscoveryInfo, Organization, Pool)
-from rest_api.rest_api_server.models.enums import CloudTypes, ConditionTypes
+    CloudAccount, DiscoveryInfo, Organization, Pool, ReportImport)
+from rest_api.rest_api_server.models.enums import (
+    CloudTypes, ConditionTypes, ImportStates)
 from rest_api.rest_api_server.controllers.base import BaseController
 from rest_api.rest_api_server.controllers.base_async import (
     BaseAsyncControllerWrapper)
@@ -63,6 +69,62 @@ LOG = logging.getLogger(__name__)
 
 
 NOTIFY_FIELDS = ["name", "config"]
+
+# Data Sources highlight: Stage vs Target totals may differ by this amount.
+_STAGE_TARGET_COST_TOLERANCE = 1.0
+
+
+def _parse_report_import_details(details):
+    if not details:
+        return None
+    if isinstance(details, str):
+        try:
+            details = json.loads(details) if details else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    if not isinstance(details, dict):
+        return None
+    return details
+
+
+def _money_differs(left, right):
+    try:
+        return abs(float(left or 0) - float(right or 0)) > _STAGE_TARGET_COST_TOLERANCE
+    except (TypeError, ValueError):
+        return False
+
+
+def stage_target_cost_mismatch(details):
+    """True when total Target cost (CH) differs from total Stage cost (Mongo).
+
+    Per-type rows can disagree (SKU vs Instance) while the footer totals
+    match — Data Sources highlights the project only when those sums drift
+    by more than $1.
+    """
+    parsed = _parse_report_import_details(details)
+    if not parsed:
+        return False
+    rows = parsed.get('reconciliation')
+    if isinstance(rows, list) and rows:
+        local_total = 0.0
+        target_total = 0.0
+        saw_pair = False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if 'local_sum' not in row or 'target_sum' not in row:
+                continue
+            try:
+                local_total += float(row.get('local_sum') or 0)
+                target_total += float(row.get('target_sum') or 0)
+            except (TypeError, ValueError):
+                continue
+            saw_pair = True
+        if saw_pair:
+            return _money_differs(local_total, target_total)
+    if 'local_sum' in parsed and 'target_sum' in parsed:
+        return _money_differs(parsed.get('local_sum'), parsed.get('target_sum'))
+    return False
 
 
 class CloudAccountController(BaseController, ClickHouseMixin):
@@ -141,6 +203,10 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             raise WrongArgumentsException(Err.OE0437, [adapter_cls.__name__, str(ex)])
         except CloudConnectionError as ex:
             raise WrongArgumentsException(Err.OE0455, [str(ex)])
+        # Persist detected Snowflake home region on the cloud account config.
+        region = response.get('region')
+        if region:
+            config['region'] = region
         return config, response['account_id'], response['warnings']
 
     def validate_config(self, adapter_cls, config,
@@ -306,6 +372,24 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             raise FailedDependency(Err.OE0569, [])
         return service_creds
 
+    def _coerce_snowflake_tenant_type(self, cloud_acc_type, config):
+        """organization_usage on a root snowflake CA ⇒ snowflake_tenant.
+
+        Children keep type=snowflake; only root accounts are remapped.
+        """
+        billing_source = str(
+            (config or {}).get('billing_source') or '').strip().lower()
+        if cloud_acc_type == CloudTypes.SNOWFLAKE.value and (
+                billing_source == 'organization_usage'):
+            config = dict(config or {})
+            config['billing_source'] = 'organization_usage'
+            return CloudTypes.SNOWFLAKE_TENANT.value, config
+        if cloud_acc_type == CloudTypes.SNOWFLAKE_TENANT.value:
+            config = dict(config or {})
+            config['billing_source'] = 'organization_usage'
+            return cloud_acc_type, config
+        return cloud_acc_type, config
+
     def create(self, **kwargs):
         org_id = kwargs.get('organization_id')
         self._check_organization(org_id)
@@ -314,13 +398,19 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         cloud_acc_type = kwargs.get('type')
         if cloud_acc_type is None:
             raise_not_provided_exception('type')
-        adapter_cls = self.get_adapter(cloud_acc_type)
         self.check_create_restrictions(**kwargs)
         raw_config = kwargs.pop('config', {})
         config = raw_config
         if root_config:
             config = root_config
             config.update(raw_config)
+        if not kwargs.get('parent_id'):
+            cloud_acc_type, config = self._coerce_snowflake_tenant_type(
+                cloud_acc_type, config)
+            kwargs['type'] = cloud_acc_type
+            if not root_config:
+                raw_config = config
+        adapter_cls = self.get_adapter(cloud_acc_type)
         if cloud_acc_type in [CloudTypes.AWS_CNR.value]:
             assume_role_account_id = config.get('assume_role_account_id')
             assume_role_name = config.get('assume_role_name')
@@ -342,8 +432,19 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         cost_model = config.pop('cost_model', {}) if config else {}
         organization = OrganizationController(
             self.session, self._config, self.token).get(org_id)
-        config, account_id, warnings = self.handle_config(
-            adapter_cls, config, organization)
+        # Tenant children already inherit validated parent credentials; identity
+        # comes from account_locator. Skip live Snowflake probes — otherwise
+        # resource-observer re-validates every existing child on each run.
+        child_locator = (raw_config or {}).get('account_locator') if root_config else None
+        if root_config and child_locator:
+            self.validate_config(adapter_cls, config,
+                                 {'bucket_prefix': check_string})
+            config = adapter_cls.configure_credentials(config)
+            account_id = str(child_locator)
+            warnings = []
+        else:
+            config, account_id, warnings = self.handle_config(
+                adapter_cls, config, organization)
         self.check_cloud_account_exists(org_id, cloud_acc_type, account_id)
         kwargs['account_id'] = account_id
         last_import_modified_at = self._configure_last_import_modified_at(
@@ -355,6 +456,15 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         self._validate(ca_obj, True, **kwargs)
         if ca_obj.type in [CloudTypes.AZURE_TENANT, CloudTypes.GCP_TENANT]:
             ca_obj.auto_import = False
+        if ca_obj.parent_id and ca_obj.type == CloudTypes.SNOWFLAKE:
+            # Tenant runs the single org import; children only hold expenses.
+            ca_obj.auto_import = False
+        if ca_obj.type in (CloudTypes.SNOWFLAKE, CloudTypes.SNOWFLAKE_TENANT):
+            # Hourly SF imports are expensive; schedule via period-6 loop.
+            ca_obj.import_period = 6
+        if ca_obj.type == CloudTypes.GCP_CNR:
+            # Hourly BQ pulls are expensive; 3-day lookback covers the gap.
+            ca_obj.import_period = 6
         configuration_res = self._configure_report(
             adapter_cls, config, organization)
         if isinstance(configuration_res, dict):
@@ -366,10 +476,9 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         c_type_ctrl_map = {
             CloudTypes.KUBERNETES_CNR: CloudBasedCostModelController,
             CloudTypes.DATABRICKS: SkuBasedCostModelController,
-            CloudTypes.SNOWFLAKE: SkuBasedCostModelController,
         }
         ctrl = c_type_ctrl_map.get(ca_obj.type)
-        if ctrl:
+        if ctrl and not ca_obj.parent_id:
             ctrl(self.session, self._config).create(
                 organization_id=org_id, id=ca_obj.id, value=cost_model)
             ca_obj.cost_model_id = ca_obj.id
@@ -431,6 +540,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         # schedule report import for this CA immediately
         import_ctrl = ReportImportBaseController(self.session, self._config)
         for i in self._import_target_cloud_account_ids(ca_obj):
+            # Fail stale first; skip while a fresh SCHEDULED/IN_PROGRESS remains.
+            import_ctrl.fail_stale_imports(i)
             if import_ctrl.check_unprocessed_imports(i):
                 LOG.warning(
                     'Skip scheduling import for cloud account %s: another '
@@ -440,13 +551,14 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             import_ctrl.create(i, priority=8)
 
     def _ensure_reimport_allowed(self, ca_obj, new_last_import_at):
-        """Block billing reimport while another import is actively running."""
+        """Block billing reimport while this account still has unfinished work."""
         current = ca_obj.last_import_at or 0
         if new_last_import_at >= current:
             return
         import_ctrl = ReportImportBaseController(self.session, self._config)
         for i in self._import_target_cloud_account_ids(ca_obj):
-            if import_ctrl.check_in_progress_import(i):
+            import_ctrl.fail_stale_imports(i)
+            if import_ctrl.check_unprocessed_imports(i):
                 raise ConflictException(Err.OE0574, [])
 
     def _get_evironment_cloud_account(self, organization_id):
@@ -527,7 +639,6 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         c_type_ctrl_map = {
             CloudTypes.KUBERNETES_CNR: CloudBasedCostModelController,
             CloudTypes.DATABRICKS: SkuBasedCostModelController,
-            CloudTypes.SNOWFLAKE: SkuBasedCostModelController,
         }
         cost_model_controller = c_type_ctrl_map.get(
             cloud_acc_obj.type, CloudBasedCostModelController)(
@@ -535,12 +646,14 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         old_config = cloud_acc_obj.decoded_config
         config = kwargs.pop('config', {})
         # Price-only updates send {cost_model: {...}}. Pop it before merging
-        # secrets / validating billing creds — otherwise restoring protected
-        # fields (e.g. Snowflake private_key) makes config non-empty and
-        # handle_config fails with "account, user, warehouse is not provided".
+        # secrets / validating billing creds.
         cost_model = {}
         if config:
             cost_model = config.pop('cost_model', {}) or {}
+            # Snowflake prices come from RATE_SHEET_DAILY — ignore cost_model.
+            if cloud_acc_obj.type in (
+                    CloudTypes.SNOWFLAKE, CloudTypes.SNOWFLAKE_TENANT):
+                cost_model = {}
         if 'linked' in config:
             linked = config['linked']
             if linked != old_config.get('linked', False):
@@ -566,9 +679,25 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                     continue
                 if config.get(param.name):
                     continue
+                # AWS access-key pair / assume-role fields must stay omitted so
+                # OE0548 (half-pair) and assume-role transitions can see them.
+                # Refill keys only when the patch does not touch AWS creds.
+                if (cloud_acc_type == CloudTypes.AWS_CNR.value and
+                        param.name in ('access_key_id', 'secret_access_key')):
+                    touching_aws_creds = any(
+                        k in config for k in (
+                            'access_key_id', 'secret_access_key',
+                            'assume_role_account_id', 'assume_role_name'))
+                    if touching_aws_creds:
+                        continue
                 old_value = old_config.get(param.name)
                 if old_value:
                     config[param.name] = old_value
+            # Preserve observer throttle marker across credential edits.
+            if ('last_children_sync_at' not in config
+                    and old_config.get('last_children_sync_at') is not None):
+                config['last_children_sync_at'] = old_config[
+                    'last_children_sync_at']
         if cloud_acc_type in [CloudTypes.AWS_CNR.value]:
             has_assumed_role_data = bool(
                 config.get('assume_role_account_id') or config.get('assume_role_name')
@@ -659,6 +788,10 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         if should_schedule_import:
             self._ensure_reimport_allowed(
                 cloud_acc_obj, kwargs['last_import_at'])
+            # Rewinding last_import_at without clearing a prior attempt error
+            # makes UI show "Billing import failed" (attempt_at > import_at).
+            if kwargs['last_import_at'] < (cloud_acc_obj.last_import_at or 0):
+                kwargs.setdefault('last_import_attempt_error', None)
 
         if kwargs:
             updated_cloud_account = super().update(item_id, **kwargs)
@@ -714,6 +847,7 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             CloudTypes.KUBERNETES_CNR: CloudBasedCostModelController,
             CloudTypes.DATABRICKS: SkuBasedCostModelController,
             CloudTypes.SNOWFLAKE: SkuBasedCostModelController,
+            CloudTypes.SNOWFLAKE_TENANT: SkuBasedCostModelController,
         }
         if cloud_account.type in c_type_ctrl_map:
             c_type_ctrl_map[cloud_account.type](
@@ -734,6 +868,48 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         if not cloud_account.organization.is_demo:
             self.send_cloud_account_email(cloud_account, action='deleted')
 
+    def _latest_completed_import_details(self, cloud_acc_ids):
+        if not cloud_acc_ids:
+            return {}
+        latest = self.session.query(
+            ReportImport.cloud_account_id,
+            func.max(ReportImport.created_at).label('max_created'),
+        ).filter(
+            ReportImport.cloud_account_id.in_(cloud_acc_ids),
+            ReportImport.deleted.is_(False),
+            ReportImport.state == ImportStates.COMPLETED,
+        ).group_by(ReportImport.cloud_account_id).subquery()
+        rows = self.session.query(ReportImport).join(
+            latest,
+            and_(
+                ReportImport.cloud_account_id == latest.c.cloud_account_id,
+                ReportImport.created_at == latest.c.max_created,
+                ReportImport.deleted.is_(False),
+            )
+        ).all()
+        result = {}
+        for row in rows:
+            result[row.cloud_account_id] = _parse_report_import_details(
+                row.details)
+        return result
+
+    def _health_fields(self, cloud_acc_ids):
+        ids = list(cloud_acc_ids or [])
+        if not ids:
+            return {}
+        dup_ctrl = ResourceDuplicatesController(
+            self.session, self._config, self.token)
+        dup_counts = dup_ctrl.snapshot_counts_by_account(ids)
+        import_details = self._latest_completed_import_details(ids)
+        return {
+            cid: {
+                'duplicate_groups': int(dup_counts.get(cid, 0)),
+                'cost_mismatch': stage_target_cost_mismatch(
+                    import_details.get(cid)),
+            }
+            for cid in ids
+        }
+
     def get_details(self, cloud_acc_id):
         today = opttime.utcnow()
         expense_ctrl = ExpenseController(self._config)
@@ -745,6 +921,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             expense_ctrl, today, [cloud_acc_id]
         ).get(cloud_acc_id, default)
         discovery_infos = self._get_discovery_infos([cloud_acc_id])
+        found_discovery_infos = self._filter_found_discovery_infos(
+            cloud_acc_id, discovery_infos.get(cloud_acc_id, []))
         first_expenses = expense_ctrl.get_first_expenses_for_forecast(
             'cloud_account_id', [cloud_acc_id])
         total_costs = expense_ctrl.get_total_costs([cloud_acc_id])
@@ -759,15 +937,15 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             'resources': month_expenses['count'],
             'total_cost': total_costs.get(cloud_acc_id, 0),
             'total_resources': total_resources.get(cloud_acc_id, 0),
-            'discovery_infos': discovery_infos.get(cloud_acc_id, [])
+            'discovery_infos': found_discovery_infos
         }
-        cloud_acc = super().get(cloud_acc_id)
-        if cloud_acc and cloud_acc.type == CloudTypes.SNOWFLAKE:
-            ranges = expense_ctrl.get_expense_date_ranges([cloud_acc_id])
-            period = ranges.get(cloud_acc_id)
-            if period:
-                details['billing_period_start'] = period[0]
-                details['billing_period_end'] = period[1]
+        ranges = expense_ctrl.get_expense_date_ranges([cloud_acc_id])
+        period = ranges.get(cloud_acc_id)
+        if period:
+            details['billing_period_start'] = period[0]
+            details['billing_period_end'] = period[1]
+        details.update(self._health_fields([cloud_acc_id]).get(
+            cloud_acc_id, {'duplicate_groups': 0, 'cost_mismatch': False}))
         return details
 
     def _get_discovery_infos(self, cloud_acc_ids):
@@ -782,7 +960,39 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             discovery_info_map[cloud_acc_id].append(discovery_info.to_dict())
         return discovery_info_map
 
-    def get_expenses(self, cloud_acc, start_date, end_date, filter_by):
+    @staticmethod
+    def _discovery_type_name(mongo_resource_type):
+        if mongo_resource_type in ResourceTypes.__members__:
+            return mongo_resource_type
+        try:
+            return ResourceTypes(mongo_resource_type).name
+        except (ValueError, TypeError):
+            return None
+
+    def _found_discovery_type_names(self, cloud_acc_id):
+        mongo_types = self.resource_ctrl.resources_collection.distinct(
+            'resource_type',
+            {
+                'cloud_account_id': cloud_acc_id,
+                'deleted_at': 0,
+                'active': True,
+            })
+        names = set()
+        for mongo_type in mongo_types:
+            name = self._discovery_type_name(mongo_type)
+            if name:
+                names.add(name)
+        return names
+
+    def _filter_found_discovery_infos(self, cloud_acc_id, infos):
+        # Keep DiscoveryInfo rows in MariaDB so the worker still schedules
+        # every adapter type. The Data Source details table only shows types
+        # that discovery actually created (active=True) in this account.
+        found = self._found_discovery_type_names(cloud_acc_id)
+        return [info for info in infos if info.get('resource_type') in found]
+
+    def get_expenses(self, cloud_acc, start_date, end_date, filter_by,
+                     invoice_months=None):
         controller_map = {
             'service': ServiceFilteredCloudFormattedExpenseController,
             'region': RegionFilteredCloudFormattedExpenseController,
@@ -795,7 +1005,7 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         }
         controller = controller_map.get(filter_by)(self.session, self._config)
         return controller.get_formatted_expenses(
-            cloud_acc, start_date, end_date)
+            cloud_acc, start_date, end_date, invoice_months=invoice_months)
 
     @staticmethod
     def _get_cloud_expenses(expense_ctrl, start, end, cloud_acc_ids):
@@ -882,11 +1092,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         total_resources = (
             expense_ctrl.get_total_resource_counts(cloud_acc_ids)
             if cloud_acc_ids else {})
-        snowflake_ids = [
-            acc.id for acc in cloud_accounts
-            if acc.type == CloudTypes.SNOWFLAKE]
         billing_periods = expense_ctrl.get_expense_date_ranges(
-            snowflake_ids) if snowflake_ids else {}
+            cloud_acc_ids) if cloud_acc_ids else {}
         for acc in cloud_accounts:
             default = {'cost': 0, 'count': 0}
             current_stats = month_expenses.get(acc.id, default)
@@ -907,6 +1114,12 @@ class CloudAccountController(BaseController, ClickHouseMixin):
             if period:
                 result[acc.id]['details']['billing_period_start'] = period[0]
                 result[acc.id]['details']['billing_period_end'] = period[1]
+        health = self._health_fields(cloud_acc_ids)
+        for acc in cloud_accounts:
+            result[acc.id]['details'].update(health.get(acc.id, {
+                'duplicate_groups': 0,
+                'cost_mismatch': False,
+            }))
         return list(result.values())
 
     def get_employee(self, user_id, org_id):
@@ -930,25 +1143,57 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         root_skipped_subscriptions = root_config.pop(
             'skipped_subscriptions', {})
         skipped_subscriptions = root_skipped_subscriptions.copy()
+        # Tenant-only service fields must not leak into child snowflake
+        # credentials validation (Unexpected parameters → skipped_subscriptions).
+        root_config.pop('last_children_sync_at', None)
+        existing_children = self.session.query(CloudAccount).filter(
+            CloudAccount.organization_id == root_account.organization_id,
+            CloudAccount.deleted.is_(False),
+            CloudAccount.parent_id == root_account.id,
+        ).all()
+        existing_by_locator = {}
+        for child in existing_children:
+            locator = (child.decoded_config or {}).get('account_locator')
+            if not locator:
+                locator = child.account_id
+            if locator:
+                existing_by_locator[str(locator).upper()] = child
+        existing_locators = set(existing_by_locator.keys())
+        children_config_updated = False
         for c_config in configs:
             c_base_name = c_config.get('name')
             c_name = c_base_name
+            child_cfg = c_config.get('config') or {}
+            locator = child_cfg.get('account_locator')
+            if locator and str(locator).upper() in existing_locators:
+                # Already linked — do not call create()/validate_credentials.
+                # Refresh detected region from ORGANIZATION_USAGE.ACCOUNTS.
+                region = child_cfg.get('region')
+                if region:
+                    child = existing_by_locator[str(locator).upper()]
+                    old_cfg = dict(child.decoded_config or {})
+                    if old_cfg.get('region') != region:
+                        old_cfg['region'] = region
+                        child.config = encode_config(old_cfg)
+                        children_config_updated = True
+                if c_name in skipped_subscriptions:
+                    skipped_subscriptions.pop(c_name, None)
+                    skipped_subscriptions.pop(c_base_name, None)
+                continue
             try:
                 ca_exists = self.session.query(
                     exists().where(and_(
                         CloudAccount.name == c_base_name,
                         CloudAccount.deleted.is_(False),
-                        or_(
-                            CloudAccount.parent_id != root_account.id,
-                            CloudAccount.parent_id.is_(None),
-                        ),
                         CloudAccount.organization_id == root_account.organization_id
                     ))
                 ).scalar()
                 if ca_exists:
-                    # cloud account with the same name already exists, so add
-                    # parent account id to children's name
-                    c_name = c_base_name + f' ({root_account.account_id})'
+                    # Name already used in this org (sibling or other CA) —
+                    # disambiguate with locator/account id from child config.
+                    suffix = child_cfg.get(
+                        'account_locator') or root_account.account_id
+                    c_name = c_base_name + f' ({suffix})'
                     c_config['name'] = c_name
                 ca = self.create(
                     organization_id=root_account.organization_id,
@@ -958,10 +1203,14 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                     # Corner case for parent removal during the iteration
                     self.delete(ca.id)
                     return
+                if locator:
+                    existing_locators.add(str(locator).upper())
                 if c_name in skipped_subscriptions:
+                    skipped_subscriptions.pop(c_name, None)
                     skipped_subscriptions.pop(c_base_name, None)
             except ConflictException:
                 if c_name in skipped_subscriptions:
+                    skipped_subscriptions.pop(c_name, None)
                     skipped_subscriptions.pop(c_base_name, None)
             except Exception as ex:
                 if c_name not in skipped_subscriptions:
@@ -977,6 +1226,8 @@ class CloudAccountController(BaseController, ClickHouseMixin):
         if skipped_subscriptions.keys() != root_skipped_subscriptions.keys():
             root_config['skipped_subscriptions'] = skipped_subscriptions
             self.edit(root_account.id, config=root_config)
+        elif children_config_updated:
+            self.session.commit()
 
     def delete_children_accounts(self, root_account):
         children = self.session.query(CloudAccount).filter(

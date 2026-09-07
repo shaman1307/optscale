@@ -45,6 +45,14 @@ export const usePaginationTableSettings = ({ pageSize, rowsCount, queryParamPref
     };
   }, [pageSize, pagination.pageIndex, pagination.pageSize, rowsCount]);
 
+  // Always register getPaginationRowModel. With paginateExpandedRows: false,
+  // TanStack only flattens expanded subRows inside this model — skipping it
+  // (e.g. PoolsTable without pageSize) leaves chevrons working and totals
+  // updating via getSubRows while child rows never render.
+  const paginationRowModelOption = {
+    getPaginationRowModel: getPaginationRowModel(),
+  };
+
   if (isPaginationEnabled) {
     return {
       state: {
@@ -52,7 +60,7 @@ export const usePaginationTableSettings = ({ pageSize, rowsCount, queryParamPref
       },
       tableOptions: {
         autoResetPageIndex: false,
-        getPaginationRowModel: getPaginationRowModel(),
+        ...paginationRowModelOption,
         onPaginationChange: handleChange(pagination, (newPaginationState) => {
           if (enablePaginationQueryParam) {
             updateSearchParams({ [queryKeyForPage]: newPaginationState.pageIndex + 1 });
@@ -70,6 +78,6 @@ export const usePaginationTableSettings = ({ pageSize, rowsCount, queryParamPref
         pageIndex: 0,
       },
     },
-    tableOptions: {},
+    tableOptions: paginationRowModelOption,
   };
 };

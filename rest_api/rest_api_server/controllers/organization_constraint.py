@@ -9,7 +9,7 @@ from rest_api.rest_api_server.controllers.available_filters import (
 from rest_api.rest_api_server.controllers.base import FilterValidationMixin
 from rest_api.rest_api_server.exceptions import Err
 from tools.optscale_exceptions.common_exc import (
-    NotFoundException, WrongArgumentsException)
+    FailedDependency, NotFoundException, WrongArgumentsException)
 from sqlalchemy import Enum, and_
 from rest_api.rest_api_server.models.enums import OrganizationConstraintTypes as OrgCTypes
 from rest_api.rest_api_server.models.models import (
@@ -19,12 +19,13 @@ from rest_api.rest_api_server.controllers.base_async import BaseAsyncControllerW
 from rest_api.rest_api_server.controllers.constraint_base import ConstraintBaseController
 from rest_api.rest_api_server.utils import (
     check_int_attribute, get_nil_uuid, check_dict_attribute,
-    check_string_attribute, check_float_attribute, timestamp_to_day_start)
+    check_string_attribute, check_float_attribute, timestamp_to_day_start,
+    build_virtual_tag_mongo_filter, current_quarter)
 
 JOINED_ENTITY_MAP = {
     'cloud_account': ('cloud_account_id', ['id', 'name', 'type']),
     'owner': ('owner_id', ['id', 'name']),
-    'pool': ('pool_id', ['id', 'name', 'purpose'])
+    'pool': ('pool_id', ['id', 'name', 'purpose', 'parent_id'])
 }
 LOG = logging.getLogger(__name__)
 WITH_SUBPOOLS_SIGN = '+'
@@ -38,6 +39,17 @@ class FilterDetailsController(AvailableFiltersController):
     @staticmethod
     def _get_base_result(filter_values):
         return filter_values
+
+    def get(self, organization_id, **params):
+        # Skip AvailableFiltersController lazy-facets path. Constraint filter
+        # validation still needs full aggregation including tag/meta keys.
+        params.pop('facets', None)
+        try:
+            self.get_organization_and_cloud_accs(organization_id)
+        except FailedDependency:
+            return self._get_base_result({})
+        return super(AvailableFiltersController, self).get(
+            organization_id, **params)
 
     def _aggregate_resource_data(self, match_query, **kwargs):
         last_recommend_run = kwargs['last_recommend_run']
@@ -79,7 +91,6 @@ class FilterDetailsController(AvailableFiltersController):
                 'day': {'$trunc': {
                     '$divide': ['$first_seen', DAY_IN_SECONDS]}},
             },
-            'cloud_resource_ids': {'$addToSet': '$cloud_resource_id'},
         })
         pipeline = [{'$match': match_query}]
         if 'tag' in kwargs or 'without_tag' in kwargs:
@@ -97,6 +108,32 @@ class FilterDetailsController(AvailableFiltersController):
                 {'$addFields': {'meta': {'$objectToArray': "$meta"}}},
                 {'$unwind': {
                     'path': "$meta",
+                    'preserveNullAndEmptyArrays': True
+                }},
+            ])
+        if 'virtual_tag' in kwargs:
+            group_stage.update({
+                'virtual_tag': {
+                    '$addToSet': {
+                        '$concat': [
+                            {'$ifNull': ['$virtual_tags.key', '']},
+                            ':',
+                            {'$ifNull': ['$virtual_tags.value', '']},
+                        ]
+                    }
+                }
+            })
+            pipeline.extend([
+                {'$addFields': {
+                    'virtual_tags': {
+                        '$ifNull': [
+                            '$virtual_tags_by_quarter.%s' % current_quarter(),
+                            {'$ifNull': ['$virtual_tags', []]},
+                        ]
+                    }
+                }},
+                {'$unwind': {
+                    'path': '$virtual_tags',
                     'preserveNullAndEmptyArrays': True
                 }},
             ])
@@ -131,6 +168,14 @@ class FilterDetailsController(AvailableFiltersController):
                     key = f"{v['name']}:{v['cloud_type']}" if isinstance(
                         v, dict) else v
                     result_u_values[key] = v
+            elif field == 'virtual_tag':
+                nil_uuid = get_nil_uuid()
+                result_u_values = {
+                    x: x for x in uniq_values
+                    if x and x != ':'
+                }
+                result_u_values[nil_uuid] = nil_uuid
+                result_u_values[None] = nil_uuid
             elif not isinstance(uniq_values, dict):
                 result_u_values = {x: x for x in uniq_values}
             elif field in bool_fields and not uniq_values:
@@ -211,6 +256,13 @@ class FilterDetailsController(AvailableFiltersController):
                 else:
                     meta_filter.append(
                         {'meta.%s' % v: {'$exists': True}})
+            if meta_filter:
+                subquery.append({'$or': meta_filter})
+        vt_filter = build_virtual_tag_mongo_filter(
+            params.pop('virtual_tag', None), nil_uuid,
+            quarters=[current_quarter()])
+        if vt_filter:
+            subquery.append(vt_filter)
 
         for filter_key, filter_values in params.items():
             for n, filter_value in enumerate(filter_values):
@@ -257,11 +309,32 @@ class FilterDetailsController(AvailableFiltersController):
 
     def get_resources_data(self, organization_id, query_filters,
                            data_filters, extra_params):
+        query_filters = query_filters.copy()
+        data_filters = data_filters.copy()
+        vt_params = query_filters.get('virtual_tag')
         query = self.generate_filters_pipeline(
-            organization_id, self.start_date, self.end_date, query_filters.copy(),
-            data_filters.copy())
-        return self._aggregate_resource_data(
-            query, **query_filters, **data_filters, **extra_params)
+            organization_id, self.start_date, self.end_date,
+            query_filters.copy(), data_filters.copy())
+        data = list(self._aggregate_resource_data(
+            query, **query_filters, **data_filters, **extra_params))
+        if vt_params is not None:
+            value_filters = query_filters.copy()
+            value_filters.pop('virtual_tag', None)
+            value_query = self.generate_filters_pipeline(
+                organization_id, self.start_date, self.end_date,
+                value_filters, data_filters.copy())
+            pairs = self._collect_virtual_tags(value_query)
+            strings = []
+            for item in pairs:
+                if not item.get('key'):
+                    strings.append(get_nil_uuid())
+                    continue
+                strings.append('%s:%s' % (item['key'], item['value'] or ''))
+            if data:
+                data[0]['virtual_tag'] = strings
+            else:
+                data = [{'_id': {}, 'virtual_tag': strings}]
+        return data
 
 
 class ConstraintRunValidationMixin:
@@ -338,7 +411,8 @@ class OrganizationConstraintController(ConstraintBaseController,
     def _remove_subpool_sign(pool_ids):
         return [x.removesuffix(WITH_SUBPOOLS_SIGN) for x in pool_ids]
 
-    def _get_object_entities(self, organization_id, model, entity_ids):
+    def _get_object_entities(self, organization_id, model, entity_ids,
+                             raise_not_found=True):
         nil_uuid = get_nil_uuid()
         entity_ids = list(filter(
             lambda x: x is not None and x != nil_uuid, entity_ids))
@@ -353,12 +427,13 @@ class OrganizationConstraintController(ConstraintBaseController,
         ).all()
         result = {x.id: x.to_dict() for x in objects}
         not_found = [x for x in entity_ids if x not in result.keys()]
-        if not_found:
+        if not_found and raise_not_found:
             raise WrongArgumentsException(Err.OE0002, [
                 model.__name__, not_found[0]])
         return result
 
-    def get_filters_entities(self, organization_id, filters):
+    def get_filters_entities(self, organization_id, filters,
+                             raise_not_found=True):
         entities_map = {'pool_id': Pool,
                         'owner_id': Employee,
                         'cloud_account_id': CloudAccount}
@@ -367,7 +442,8 @@ class OrganizationConstraintController(ConstraintBaseController,
             if filters.get(entity):
                 entity_ids = set(filters[entity])
                 entities.update(self._get_object_entities(
-                    organization_id, model, entity_ids))
+                    organization_id, model, entity_ids,
+                    raise_not_found=raise_not_found))
         return entities
 
     @staticmethod
@@ -448,7 +524,11 @@ class OrganizationConstraintController(ConstraintBaseController,
             for filter_name, value in filters.items():
                 if filter_name not in optscale_filters:
                     extended_filters[filter_name] = value
-            entities = self.get_filters_entities(organization_id, filters)
+            # List/get must not 400 Home when a stored filter still points at a
+            # deleted pool/employee/cloud account (create/update stay strict).
+            entities = self.get_filters_entities(
+                organization_id, filters, raise_not_found=False)
+            nil_uuid = get_nil_uuid()
             for entity_name, v in JOINED_ENTITY_MAP.items():
                 entity_key, fields = v
                 entity_ids = filters.pop(entity_key, [])
@@ -459,17 +539,24 @@ class OrganizationConstraintController(ConstraintBaseController,
                         with_subpools = True
                         entity_id = entity_id.removesuffix(WITH_SUBPOOLS_SIGN)
                     entity = entities.get(entity_id)
+                    if not entity:
+                        if entity_id in (None, nil_uuid):
+                            if not extended_filters.get(entity_name):
+                                extended_filters[entity_name] = []
+                            extended_filters[entity_name].append(entity_id)
+                        continue
                     if not extended_filters.get(entity_name):
                         extended_filters[entity_name] = []
-                    extended_filters[entity_name].append(
-                        {key_name: entity[key_name] for key_name in fields}
-                        if entity else entity_id)
+                    item = {key_name: entity[key_name] for key_name in fields}
                     if with_subpools:
-                        extended_filters[entity_name][-1]['id'] += WITH_SUBPOOLS_SIGN
+                        item['id'] += WITH_SUBPOOLS_SIGN
+                    extended_filters[entity_name].append(item)
         pools = extended_filters.get('pool', [])
         for pool in pools:
-            if isinstance(pool, dict) and not isinstance(pool['purpose'], str):
-                pool['purpose'] = pool['purpose'].value
+            if isinstance(pool, dict):
+                purpose = pool.get('purpose')
+                if purpose is not None and not isinstance(purpose, str):
+                    pool['purpose'] = purpose.value
         return extended_filters
 
     def create(self, **kwargs):
@@ -495,9 +582,42 @@ class OrganizationConstraintController(ConstraintBaseController,
             self._check_run_result(
                 'last_run_result', item.type, kwargs.get('last_run_result'))
 
+    def _prepare_filters_for_update(self, organization_id, filters):
+        """Validate and normalize filters the same way as create."""
+        if filters is None:
+            filters = {}
+        if filters != {}:
+            check_dict_attribute('filters', filters)
+        self.check_filters(filters)
+        self.get_filters_entities(organization_id, filters)
+        now = opttime.utcnow_timestamp()
+        filled_filters = self._fill_filters(organization_id, now, filters)
+        for in_filter, value in filters.items():
+            if (in_filter in self.int_filters
+                    and in_filter not in filled_filters):
+                filled_filters[in_filter] = value
+        return filled_filters
+
     def edit(self, item_id, **kwargs):
+        item = self.get(item_id)
+        if not item:
+            raise NotFoundException(
+                Err.OE0002, [self.model_type.__name__, item_id])
+        organization_id = item.organization_id
+        if 'definition' in kwargs:
+            definition = kwargs.get('definition')
+            check_dict_attribute('definition', definition)
+            self._check_definition(definition, item.type)
+        if 'filters' in kwargs:
+            kwargs['filters'] = self._prepare_filters_for_update(
+                organization_id, kwargs.get('filters'))
+            # Force re-evaluation after policy scope/rule change
+            if 'last_run' not in kwargs:
+                kwargs['last_run'] = 0
+        elif 'definition' in kwargs:
+            if 'last_run' not in kwargs:
+                kwargs['last_run'] = 0
         result = super().edit(item_id, **kwargs)
-        organization_id = result.organization_id
         extended_filters = self._extend_filters(
             organization_id, result.loaded_filters)
         result.filters = json.dumps(extended_filters)
@@ -588,27 +708,43 @@ class OrganizationConstraintController(ConstraintBaseController,
         for c in all_constraints:
             if filters:
                 c_filters = c.loaded_filters
+                updated = False
                 for k, v in filters.items():
-                    values = c_filters.get(k, [])
+                    values = list(c_filters.get(k, []))
                     if k == 'pool_id':
-                        values = [x.removesuffix(WITH_SUBPOOLS_SIGN)
-                                  if x is not None else x
-                                  for x in values]
-                    if v not in values:
+                        cmp_values = [
+                            x.removesuffix(WITH_SUBPOOLS_SIGN)
+                            if x is not None else x
+                            for x in values]
+                    else:
+                        cmp_values = values
+                    if v not in cmp_values:
                         continue
-                    constraints_to_delete.append(c.id)
+                    remaining = [
+                        x for x in values
+                        if (x.removesuffix(WITH_SUBPOOLS_SIGN)
+                            if k == 'pool_id' and x is not None else x) != v]
+                    if not remaining:
+                        constraints_to_delete.append(c.id)
+                        updated = False
+                        break
+                    c_filters[k] = remaining
+                    updated = True
+                if updated and c.id not in constraints_to_delete:
+                    c.filters = c_filters
             else:
                 constraints_to_delete.append(c.id)
-        self.session.query(OrganizationLimitHit).filter(
-            OrganizationLimitHit.constraint_id.in_(constraints_to_delete),
-            OrganizationLimitHit.deleted.is_(False)
-        ).update({OrganizationLimitHit.deleted_at: now},
-                 synchronize_session=False)
-        self.session.query(OrganizationConstraint).filter(
-            OrganizationConstraint.id.in_(constraints_to_delete),
-            OrganizationConstraint.deleted.is_(False)
-        ).update({OrganizationConstraint.deleted_at: now},
-                 synchronize_session=False)
+        if constraints_to_delete:
+            self.session.query(OrganizationLimitHit).filter(
+                OrganizationLimitHit.constraint_id.in_(constraints_to_delete),
+                OrganizationLimitHit.deleted.is_(False)
+            ).update({OrganizationLimitHit.deleted_at: now},
+                     synchronize_session=False)
+            self.session.query(OrganizationConstraint).filter(
+                OrganizationConstraint.id.in_(constraints_to_delete),
+                OrganizationConstraint.deleted.is_(False)
+            ).update({OrganizationConstraint.deleted_at: now},
+                     synchronize_session=False)
         self.session.commit()
 
 

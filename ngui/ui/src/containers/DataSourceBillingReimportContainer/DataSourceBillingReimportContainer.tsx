@@ -5,9 +5,8 @@ import {
   useReportImportsLazyQuery,
   useUpdateDataSourceMutation,
 } from "graphql/__generated__/hooks/restapi";
+import { isReportImportInProgress } from "utils/dataSources";
 import { getStartOfDayInUTCinSeconds } from "utils/datetime";
-
-const ACTIVE_IMPORT_STATES = new Set(["scheduled", "in_progress"]);
 
 type DataSourceBillingReimportContainerProps = {
   dataSourceId: string;
@@ -29,9 +28,7 @@ const DataSourceBillingReimportContainer = ({ dataSourceId, onSuccess }: DataSou
           },
           fetchPolicy: "network-only",
         });
-        const isImportInProgress = (importsData?.reportImports ?? []).some((item) =>
-          ACTIVE_IMPORT_STATES.has(item.state)
-        );
+        const isImportInProgress = isReportImportInProgress(importsData?.reportImports);
         if (isImportInProgress) {
           throw new Error(intl.formatMessage({ id: "billingImportAlreadyInProgress" }));
         }

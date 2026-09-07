@@ -44,6 +44,7 @@ const getNameCellContentGetter = (filterBy) => {
   return (
     {
       [EXPENSES_FILTERBY_TYPES.CLOUD]: getDataSourceNameCellContent,
+      [EXPENSES_FILTERBY_TYPES.VENDOR]: getDataSourceNameCellContent,
       [EXPENSES_FILTERBY_TYPES.POOL]: getPoolNameCellContent,
     }[filterBy] || getDefaultSourceNameCellContent
   );

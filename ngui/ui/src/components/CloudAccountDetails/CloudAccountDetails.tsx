@@ -1,5 +1,6 @@
 import CloudDownloadOutlinedIcon from "@mui/icons-material/CloudDownloadOutlined";
 import PowerOffOutlinedIcon from "@mui/icons-material/PowerOffOutlined";
+import ReplayOutlinedIcon from "@mui/icons-material/ReplayOutlined";
 import SettingsIcon from "@mui/icons-material/Settings";
 import { Link } from "@mui/material";
 import Grid from "@mui/material/Grid";
@@ -8,7 +9,6 @@ import { Link as RouterLink } from "react-router-dom";
 import ActionBar from "components/ActionBar";
 import AdvancedDataSourceDetails from "components/AdvancedDataSourceDetails";
 import DataSourceDetails from "components/DataSourceDetails";
-import DataSourceSnowflakePricing from "components/DataSourceSnowflakePricing";
 import PageContentWrapper from "components/PageContentWrapper";
 import {
   DisconnectCloudAccountModal,
@@ -22,7 +22,12 @@ import TabsWrapper from "components/TabsWrapper";
 import DataSourceNodesContainer from "containers/DataSourceNodesContainer";
 import DataSourceSkusContainer from "containers/DataSourceSkusContainer";
 import UploadCloudReportDataContainer from "containers/UploadCloudReportDataContainer";
-import { useReportImportsQuery } from "graphql/__generated__/hooks/restapi";
+import {
+  DataSourceDocument,
+  ReportImportsDocument,
+  useReportImportsQuery,
+  useUpdateDataSourceMutation,
+} from "graphql/__generated__/hooks/restapi";
 import { useAllDataSources } from "hooks/coreData/useAllDataSources";
 import { useDataSources } from "hooks/useDataSources";
 import { useIsFeatureEnabled } from "hooks/useIsFeatureEnabled";
@@ -38,17 +43,16 @@ import {
   AZURE_TENANT,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   AZURE_CNR,
   GCP_CNR,
   ALIBABA_CNR,
   NEBIUS,
   GCP_TENANT,
 } from "utils/constants";
-import { summarizeChildrenDetails } from "utils/dataSources";
+import { isReportImportInProgress, summarizeChildrenDetails } from "utils/dataSources";
 import { SPACING_2 } from "utils/layouts";
 import { getPercentageChangeModule, round } from "utils/math";
-
-const ACTIVE_IMPORT_STATES = new Set(["scheduled", "in_progress"]);
 
 const {
   DETAILS: DETAILS_TAB,
@@ -58,8 +62,20 @@ const {
   PRICING: PRICING_TAB,
 } = CLOUD_ACCOUNT_DETAILS_PAGE_TABS;
 
-const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoading }) => {
+const PageActionBar = ({
+  id,
+  type,
+  parentId,
+  name,
+  config,
+  lastImportAt,
+  lastImportAttemptAt,
+  lastImportAttemptError,
+  isLoading,
+  isSynthetic = false,
+}) => {
   const openSideModal = useOpenSideModal();
+  const [updateDataSource, { loading: isRetryImportLoading }] = useUpdateDataSourceMutation();
 
   // TODO: initial values from useDataSources are default ones, which means logo is empty, Icon is null, JSX error in console.
   // Additional check on Icon mount below.
@@ -67,21 +83,33 @@ const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoadi
   const { logo, icon: Icon } = useDataSources(type);
 
   const isEligibleForReimport =
-    (type === AWS_CNR && !config?.linked) ||
-    [AZURE_CNR, GCP_CNR, ALIBABA_CNR, NEBIUS, SNOWFLAKE].includes(type);
+    !isSynthetic &&
+    ((type === AWS_CNR && !config?.linked) ||
+      [AZURE_CNR, GCP_CNR, ALIBABA_CNR, NEBIUS, SNOWFLAKE, SNOWFLAKE_TENANT].includes(type));
 
   const { data: reportImportsData } = useReportImportsQuery({
     variables: {
       cloudAccountId: id,
       showCompleted: true,
     },
-    skip: !id || !isEligibleForReimport,
+    skip: !id || !isEligibleForReimport || isSynthetic,
     pollInterval: 10000,
   });
 
-  const isImportInProgress = (reportImportsData?.reportImports ?? []).some((item) =>
-    ACTIVE_IMPORT_STATES.has(item.state)
-  );
+  const isImportInProgress = isReportImportInProgress(reportImportsData?.reportImports);
+  const hasFailedImport = Boolean(lastImportAttemptError) && lastImportAttemptAt > lastImportAt;
+
+  const retryFailedImport = () =>
+    updateDataSource({
+      variables: {
+        dataSourceId: id,
+        params: {
+          lastImportAt,
+        },
+      },
+      refetchQueries: [DataSourceDocument, ReportImportsDocument],
+      awaitRefetchQueries: true,
+    });
 
   const getActionBarItems = () => {
     const getBillingReimportButton = () => {
@@ -104,15 +132,53 @@ const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoadi
             show: isDisabled,
             value: (
               <FormattedMessage
-                id={
-                  isImportInProgress ? "billingImportAlreadyInProgress" : "dataSourceNoBillingReportsProcessedYet"
-                }
+                id={isImportInProgress ? "billingImportAlreadyInProgress" : "dataSourceNoBillingReportsProcessedYet"}
               />
             ),
           },
         }),
       };
     };
+
+    const getRetryFailedImportButton = () => ({
+      show: isEligibleForReimport && hasFailedImport,
+      getItem: () => ({
+        key: "cloudAccountDetails-retry-failed-import",
+        icon: <ReplayOutlinedIcon fontSize="small" />,
+        messageId: "retry",
+        dataTestId: "btn_retry_failed_import",
+        type: "button",
+        isLoading: isLoading || isRetryImportLoading,
+        action: retryFailedImport,
+        requiredActions: ["MANAGE_CLOUD_CREDENTIALS"],
+        disabled: isImportInProgress,
+        tooltip: {
+          show: isImportInProgress,
+          value: <FormattedMessage id="billingImportAlreadyInProgress" />,
+        },
+      }),
+    });
+
+    // Synthetic AWS tenant has no API entity — only rename (stored locally per org).
+    if (isSynthetic) {
+      return [
+        {
+          show: true,
+          getItem: () => ({
+            key: "cloudAccountDetails-rename",
+            icon: <SettingsIcon fontSize="small" />,
+            messageId: "rename",
+            dataTestId: "btn_rename_data_source_modal",
+            type: "button",
+            isLoading,
+            action: () => openSideModal(RenameDataSourceModal, { name, id }),
+            requiredActions: ["MANAGE_CLOUD_CREDENTIALS"],
+          }),
+        },
+      ]
+        .map(({ show, getItem }) => (show ? getItem() : null))
+        .filter((item) => item !== null);
+    }
 
     return [
       {
@@ -131,6 +197,7 @@ const PageActionBar = ({ id, type, parentId, name, config, lastImportAt, isLoadi
             }),
         }),
       },
+      getRetryFailedImportButton(),
       {
         show: true,
         getItem: () => ({
@@ -299,8 +366,11 @@ const Tabs = ({
   config,
   isLoading,
   isTenant,
+  isSynthetic = false,
+  billingImportDataSourceId,
 }) => {
   const isAwsReportUploadEnabled = useIsFeatureEnabled("show_aws_upload_report");
+  const advancedDataSourceId = billingImportDataSourceId || id;
 
   const tabs = [
     {
@@ -314,6 +384,7 @@ const Tabs = ({
           type={type}
           config={config}
           createdAt={createdAt}
+          isSynthetic={isSynthetic}
         />
       ),
       renderCondition: () => type !== ENVIRONMENT,
@@ -321,10 +392,12 @@ const Tabs = ({
     {
       title: ADVANCED_TAB,
       dataTestId: "tab_advanced",
-      node: !!id && (
+      node: !!advancedDataSourceId && (
         <AdvancedDataSourceDetails
-          dataSourceId={id}
+          dataSourceId={advancedDataSourceId}
           dataSourceType={type}
+          parentId={parentId}
+          accountId={accountId}
           lastImportAt={lastImportAt}
           lastImportAttemptAt={lastImportAttemptAt}
           lastImportAttemptError={lastImportAttemptError}
@@ -336,13 +409,14 @@ const Tabs = ({
           billingPeriodEnd={billingPeriodEnd}
         />
       ),
-      renderCondition: () => !isTenant,
+      // Synthetic AWS tenant mirrors Snowflake/GCP tenant Advanced (billing on root).
+      renderCondition: () => !isTenant || isSynthetic || type === SNOWFLAKE_TENANT || type === GCP_TENANT,
     },
     {
       title: UPLOAD_TAB,
       dataTestId: "tab_upload",
       node: !!id && <UploadCloudReportDataContainer cloudAccountId={id} />,
-      renderCondition: () => type === AWS_CNR && isAwsReportUploadEnabled,
+      renderCondition: () => type === AWS_CNR && !isSynthetic && isAwsReportUploadEnabled,
     },
     {
       title: NODES_TAB,
@@ -353,14 +427,8 @@ const Tabs = ({
     {
       title: PRICING_TAB,
       dataTestId: "tab_pricing",
-      node:
-        !!id &&
-        (type === DATABRICKS ? (
-          <DataSourceSkusContainer dataSourceId={id} costModel={config.cost_model} />
-        ) : (
-          <DataSourceSnowflakePricing cloudAccountId={id} costModel={config.cost_model} />
-        )),
-      renderCondition: () => type === DATABRICKS || type === SNOWFLAKE,
+      node: !!id && <DataSourceSkusContainer dataSourceId={id} costModel={config.cost_model} />,
+      renderCondition: () => type === DATABRICKS,
     },
   ];
 
@@ -392,11 +460,15 @@ const CloudAccountDetails = ({ data = {}, isLoading = false }) => {
     last_getting_metric_attempt_error: lastGettingMetricAttemptError,
     details = {},
     config = {},
+    isSynthetic = false,
+    billingImportDataSourceId,
   } = data;
 
   const dataSources = useAllDataSources();
 
-  const childrenDataSources = dataSources.filter(({ parent_id: accountParentId }) => accountParentId === id);
+  const childrenDataSources = isSynthetic
+    ? dataSources.filter(({ type: dataSourceType }) => dataSourceType === AWS_CNR)
+    : dataSources.filter(({ parent_id: accountParentId }) => accountParentId === id);
 
   const childrenDetails = summarizeChildrenDetails(childrenDataSources);
 
@@ -409,7 +481,7 @@ const CloudAccountDetails = ({ data = {}, isLoading = false }) => {
     billing_period_end: billingPeriodEnd,
   } = { ...details, ...childrenDetails };
 
-  const isTenant = [AZURE_TENANT, GCP_TENANT].includes(type);
+  const isTenant = isSynthetic || [AZURE_TENANT, GCP_TENANT, SNOWFLAKE_TENANT].includes(type);
   const isChildSubscription = Boolean(parentId);
   const isSubscription = !isTenant && !isChildSubscription;
 
@@ -422,7 +494,10 @@ const CloudAccountDetails = ({ data = {}, isLoading = false }) => {
         parentId={parentId}
         config={config}
         lastImportAt={lastImportAt}
+        lastImportAttemptAt={lastImportAttemptAt}
+        lastImportAttemptError={lastImportAttemptError}
         isLoading={isLoading}
+        isSynthetic={isSynthetic}
       />
       <PageContentWrapper>
         <Grid container spacing={SPACING_2}>
@@ -454,6 +529,8 @@ const CloudAccountDetails = ({ data = {}, isLoading = false }) => {
               config={config}
               isLoading={isLoading}
               isTenant={isTenant}
+              isSynthetic={isSynthetic}
+              billingImportDataSourceId={billingImportDataSourceId}
               isChildSubscription={isChildSubscription}
               isSubscription={isSubscription}
             />

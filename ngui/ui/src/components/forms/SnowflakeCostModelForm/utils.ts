@@ -9,6 +9,5 @@ export const getDefaultValues = ({
   storagePricePerTbMonth: number;
 }): FormValues => ({
   [FIELD_NAMES.CREDIT_PRICE]: creditPrice != null ? String(creditPrice) : "0",
-  [FIELD_NAMES.STORAGE_PRICE_PER_TB_MONTH]:
-    storagePricePerTbMonth != null ? String(storagePricePerTbMonth) : "23",
+  [FIELD_NAMES.STORAGE_PRICE_PER_TB_MONTH]: storagePricePerTbMonth != null ? String(storagePricePerTbMonth) : "23",
 });

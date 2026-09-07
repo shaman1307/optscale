@@ -1,18 +1,35 @@
 import logging
 from collections import defaultdict
+
 from tools.optscale_exceptions.common_exc import (
-    FailedDependency
+    FailedDependency, WrongArgumentsException
 )
-from tools.optscale_data.clickhouse import ExternalDataConverter
 
 from rest_api.rest_api_server.controllers.base_async import (
     BaseAsyncControllerWrapper
 )
 from rest_api.rest_api_server.controllers.expense import CleanExpenseController
-from rest_api.rest_api_server.utils import encode_string, get_nil_uuid
+from rest_api.rest_api_server.exceptions import Err
+from rest_api.rest_api_server.utils import (
+    encode_string, get_nil_uuid, virtual_tags_for_quarter,
+    quarters_for_invoice_months, current_quarter)
 
 LOG = logging.getLogger(__name__)
 DAY_IN_SECONDS = 86400
+
+FACET_CORE = 'core'
+FACET_TAG = 'tag'
+FACET_META = 'meta'
+FACET_VIRTUAL_TAG = 'virtual_tag'
+VALID_FACETS = {FACET_CORE, FACET_TAG, FACET_META, FACET_VIRTUAL_TAG}
+DEFAULT_FACETS = frozenset({FACET_CORE})
+
+CORE_PROJECT_FIELDS = [
+    'cloud_account_id', 'cluster_type_id', 'is_environment', 'first_seen',
+    'service_name', 'pool_id', 'employee_id', 'k8s_node',
+    'region', 'resource_type', 'k8s_namespace', 'k8s_service',
+    'account_locator', 'active', 'constraint_violated', 'recommendations',
+]
 
 
 class AvailableFiltersController(CleanExpenseController):
@@ -47,6 +64,25 @@ class AvailableFiltersController(CleanExpenseController):
             'filter_values': filter_values
         }
 
+    @staticmethod
+    def _parse_facets(raw):
+        if raw is None:
+            return set(DEFAULT_FACETS)
+        if isinstance(raw, (list, tuple)):
+            parts = []
+            for item in raw:
+                parts.extend(str(item).split(','))
+        else:
+            parts = str(raw).split(',')
+        facets = {part.strip() for part in parts if part and part.strip()}
+        if not facets:
+            return set(DEFAULT_FACETS)
+        invalid = facets - VALID_FACETS
+        if invalid:
+            raise WrongArgumentsException(
+                Err.OE0212, [', '.join(sorted(invalid))])
+        return facets
+
     def process_data(self, resources_data, organization_id, filters, **kwargs):
         input_filters = self.get_extended_input_filters(filters)
         _, organization_cloud_accs = self.get_organization_and_cloud_accs(
@@ -60,14 +96,13 @@ class AvailableFiltersController(CleanExpenseController):
     def collect_unique_values(self, resource_data, entities):
         result = defaultdict(dict)
         r_sets = defaultdict(set)
-        cl_resource_acc_type_map = {}
         for r in resource_data:
             _id = r.pop('_id')
             cloud_account_id = _id.get('cloud_account_id')
             cloud_account = entities.get(
                 'cloud_account_id', {}).get(cloud_account_id, {})
-            for cl_res_id in r.pop('cloud_resource_ids', {}):
-                cl_resource_acc_type_map[cl_res_id] = cloud_account.get('type')
+            # Legacy aggregations may still emit cloud_resource_ids; ignore.
+            r.pop('cloud_resource_ids', None)
             for entity_name, v in self.JOINED_ENTITY_MAP.items():
                 res_key, entity_key, fields = v
                 keys = r.pop(res_key, {})
@@ -113,44 +148,48 @@ class AvailableFiltersController(CleanExpenseController):
             for entity_id, entity in entities_dict.items():
                 result[entity_name].update({
                     entity_id: {f: entity[f] for f in fields}})
-        if cl_resource_acc_type_map:
+        # Resolve cloud_type from cloud accounts — do not upload millions of
+        # cloud_resource_ids to ClickHouse as external JOIN data (send timeout).
+        ca_type_map = {
+            ca_id: ca.get('type')
+            for ca_id, ca in entities.get('cloud_account_id', {}).items()
+            if ca_id and ca.get('type')
+        }
+        if ca_type_map:
             result.update(self.get_traffic_filters(
-                list(result['cloud_account'].keys()),
-                cl_resource_acc_type_map))
+                list(ca_type_map.keys()), ca_type_map))
         return result
 
-    def get_traffic_filters(self, cloud_account_ids, cl_resource_acc_type_map):
-        res_filters = self.execute_clickhouse(
-            query="""
-                SELECT distinct(resources.cloud_type, from, to)
-                FROM traffic_expenses
-                JOIN resources ON traffic_expenses.resource_id = resources.id
-                WHERE cloud_account_id in %(cloud_account_ids)s
-                    AND traffic_expenses.date >= %(start_date)s
-                    AND traffic_expenses.date <= %(end_date)s
-            """,
-            parameters={
-                'start_date': self.start_date,
-                'end_date': self.end_date,
-                'cloud_account_ids': [
-                    c_id for c_id in cloud_account_ids if c_id
-                ]
-            },
-            external_data=ExternalDataConverter()([
-                {
-                    'name': 'resources',
-                    'structure': [
-                        ('id', 'String'),
-                        ('cloud_type', 'String')
-                    ],
-                    'data': [
-                        {'id': k, 'cloud_type': v}
-                        for k, v in cl_resource_acc_type_map.items() if v]
-                }
-            ])
-        )
+    def get_traffic_filters(self, cloud_account_ids, cloud_account_type_map):
+        if self.invoice_months:
+            return {}
+        cloud_account_ids = [c_id for c_id in cloud_account_ids if c_id]
+        if not cloud_account_ids:
+            return {}
+        try:
+            res_filters = self.execute_clickhouse(
+                query="""
+                    SELECT DISTINCT cloud_account_id, from, to
+                    FROM traffic_expenses
+                    WHERE cloud_account_id in %(cloud_account_ids)s
+                        AND date >= %(start_date)s
+                        AND date <= %(end_date)s
+                """,
+                parameters={
+                    'start_date': self.start_date,
+                    'end_date': self.end_date,
+                    'cloud_account_ids': cloud_account_ids,
+                },
+            )
+        except Exception:
+            # Traffic facets are optional; pool/cloud_account must still load.
+            LOG.exception('Failed to load traffic filters from ClickHouse')
+            return {}
         result_set = defaultdict(set)
-        for (cloud_type, _from, _to), in res_filters:
+        for cloud_account_id, _from, _to in res_filters:
+            cloud_type = cloud_account_type_map.get(cloud_account_id)
+            if not cloud_type:
+                continue
             result_set['traffic_from'].add((cloud_type, _from))
             result_set['traffic_to'].add((cloud_type, _to))
         result = {}
@@ -199,7 +238,7 @@ class AvailableFiltersController(CleanExpenseController):
                     filter_values.pop(dst_k, [])) - set(filters[src_k]))
         return filter_values
 
-    def _aggregate_resource_data(self, match_query, **kwargs):
+    def _aggregate_core_resource_data(self, match_query, **kwargs):
         last_recommend_run = kwargs['last_recommend_run']
         collected_filters = [
             'service_name', 'pool_id', 'employee_id', 'k8s_node', 'region',
@@ -238,65 +277,134 @@ class AvailableFiltersController(CleanExpenseController):
                 'day': {'$trunc': {
                     '$divide': ['$first_seen', DAY_IN_SECONDS]}},
             },
-            'tags': {'$push': '$tagKeys'},
-            'meta': {'$push': '$metaKeys'},
-            'cloud_resource_ids': {'$addToSet': '$cloud_resource_id'},
         })
+        project_stage = {field: 1 for field in CORE_PROJECT_FIELDS}
         return self.resources_collection.aggregate([
             {'$match': match_query},
-            {
-                '$addFields': {
-                    'tagKeys': {
-                        '$map': {
-                            'input': {
-                                '$objectToArray': {'$ifNull': ['$tags', {}]}
-                            },
-                            'as': "t",
-                            'in': "$$t.k"
-                        }
-                    },
-                    'metaKeys': {
-                        '$map': {
-                            'input': {
-                                '$objectToArray': {'$ifNull': ["$meta", {}]}
-                            },
-                            'as': "m",
-                            'in': "$$m.k"
-                        }
-                    }
-                }
-            },
+            {'$project': project_stage},
             {'$group': group_stage},
+        ], allowDiskUse=True)
+
+    def _collect_object_keys(self, match_query, object_field, decode_keys=False):
+        pipeline = [
+            {'$match': match_query},
+            {'$project': {object_field: 1}},
             {
-                '$addFields': {
-                    'tags': {
-                        '$reduce': {
-                            'input': "$tags",
-                            'initialValue': [],
-                            'in': {'$setUnion': ["$$value", "$$this"]}
+                '$project': {
+                    'keys': {
+                        '$map': {
+                            'input': {
+                                '$objectToArray': {
+                                    '$ifNull': ['$%s' % object_field, {}]
+                                }
+                            },
+                            'as': 'entry',
+                            'in': '$$entry.k'
                         }
                     }
                 }
             },
-            {
-                '$addFields': {
-                    'meta': {
-                        '$reduce': {
-                            'input': "$meta",
-                            'initialValue': [],
-                            'in': {'$setUnion': ["$$value", "$$this"]}
-                        }
-                    }
-                }
-            }
-        ], allowDiskUse=True)
+            {'$unwind': '$keys'},
+            {'$group': {'_id': None, 'keys': {'$addToSet': '$keys'}}},
+        ]
+        rows = list(self.resources_collection.aggregate(
+            pipeline, allowDiskUse=True))
+        if not rows:
+            return []
+        keys = []
+        for key in rows[0].get('keys') or []:
+            if key and decode_keys:
+                keys.append(encode_string(key, decode=True))
+            else:
+                keys.append(key)
+        return keys
+
+    def _collect_virtual_tags(self, match_query):
+        quarters = (
+            quarters_for_invoice_months(self.invoice_months)
+            or [current_quarter()])
+        pairs = {}
+        for resource in self.resources_collection.find(
+                match_query, ['virtual_tags', 'virtual_tags_by_quarter']):
+            for quarter in quarters:
+                for alloc in virtual_tags_for_quarter(resource, quarter):
+                    if not isinstance(alloc, dict) or not alloc.get('key'):
+                        continue
+                    pairs[(alloc.get('key'), alloc.get('value'))] = True
+        result = [
+            {'key': key, 'value': value}
+            for key, value in sorted(pairs, key=lambda item: (
+                item[0] or '', item[1] or ''))
+        ]
+        result.insert(0, {'key': None, 'value': None})
+        return result
+
+    def _apply_tag_filter_exclusions(self, filter_values, input_filters):
+        for src_k, dst_k in [('tag', 'without_tag'), ('without_tag', 'tag')]:
+            selected = list(input_filters.get(src_k) or [])
+            if not selected:
+                continue
+            selected = [
+                None if value == get_nil_uuid() else value
+                for value in selected
+            ]
+            filter_values[dst_k] = list(
+                set(filter_values.get(dst_k, [])) - set(selected))
+        return filter_values
 
     def get(self, organization_id, **params):
         try:
             self.get_organization_and_cloud_accs(organization_id)
         except FailedDependency:
             return self._get_base_result({})
-        return super().get(organization_id, **params)
+
+        facets = self._parse_facets(params.pop('facets', None))
+
+        filters = params.copy()
+        self.handle_filters(params, filters, organization_id)
+        query_filters, data_filters, extra_params = self.split_params(
+            organization_id, params.copy())
+        match_query = self.generate_filters_pipeline(
+            organization_id, self.start_date, self.end_date,
+            query_filters.copy(), data_filters.copy())
+
+        filter_values = {}
+        if FACET_CORE in facets:
+            resources_data = self._aggregate_core_resource_data(
+                match_query, **extra_params)
+            result = self.process_data(
+                resources_data, organization_id, filters,
+                **query_filters, **extra_params)
+            # FilterDetailsController returns filter values unwrapped;
+            # AvailableFiltersController wraps them as {'filter_values': ...}.
+            # Use membership check (not __getitem__) so defaultdict(list) does
+            # not auto-create a list for a missing 'filter_values' key.
+            if isinstance(result, dict) and 'filter_values' in result:
+                filter_values = result['filter_values']
+            else:
+                filter_values = result
+            if FACET_TAG not in facets:
+                filter_values['tag'] = []
+                filter_values['without_tag'] = []
+            if FACET_META not in facets:
+                filter_values['meta'] = []
+
+        input_filters = self.get_extended_input_filters(filters)
+        if FACET_TAG in facets:
+            tag_keys = self._collect_object_keys(
+                match_query, 'tags', decode_keys=True)
+            filter_values['tag'] = list(tag_keys)
+            filter_values['without_tag'] = list(tag_keys)
+            filter_values = self._apply_tag_filter_exclusions(
+                filter_values, input_filters)
+        if FACET_META in facets:
+            filter_values['meta'] = self._collect_object_keys(
+                match_query, 'meta', decode_keys=False)
+        if FACET_VIRTUAL_TAG in facets:
+            filter_values['virtual_tag'] = self._collect_virtual_tags(
+                match_query)
+
+        return self._get_base_result(filter_values)
 
 
 class AvailableFiltersAsyncController(BaseAsyncControllerWrapper):

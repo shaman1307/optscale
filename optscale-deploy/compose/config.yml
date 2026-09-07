@@ -76,7 +76,8 @@ etcd:
       multiplier: 2
     report_imports:
       not_processed_threshold_secs: 10800
-      message_expiration_secs: 10800
+      message_expiration_secs: 86400
+      incremental_scheduler_enabled: true
   auth:
     host: auth
     port: 8905

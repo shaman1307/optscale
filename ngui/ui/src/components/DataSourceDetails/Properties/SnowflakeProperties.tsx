@@ -3,7 +3,7 @@ import { SNOWFLAKE } from "utils/constants";
 import { SnowflakePropertiesProps } from "./types";
 
 const SnowflakeProperties = ({ accountId, config, createdAt }: SnowflakePropertiesProps) => {
-  const { account, user, role, warehouse } = config;
+  const { account, user, role, warehouse, backup_warehouse: backupWarehouse, region } = config;
 
   return (
     <>
@@ -31,6 +31,16 @@ const SnowflakeProperties = ({ accountId, config, createdAt }: SnowflakeProperti
           value: "p_account_value",
         }}
       />
+      {!!region && (
+        <KeyValueLabel
+          keyMessageId="region"
+          value={region}
+          dataTestIds={{
+            key: "p_region_key",
+            value: "p_region_value",
+          }}
+        />
+      )}
       <KeyValueLabel
         keyMessageId="user"
         value={user}
@@ -55,6 +65,16 @@ const SnowflakeProperties = ({ accountId, config, createdAt }: SnowflakeProperti
           value: "p_warehouse_value",
         }}
       />
+      {!!backupWarehouse && (
+        <KeyValueLabel
+          keyMessageId="backupWarehouse"
+          value={backupWarehouse}
+          dataTestIds={{
+            key: "p_backup_warehouse_key",
+            value: "p_backup_warehouse_value",
+          }}
+        />
+      )}
     </>
   );
 };

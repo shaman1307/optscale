@@ -18,6 +18,9 @@ import {
   SET_ORGANIZATION_EXPENSES,
   SET_RAW_EXPENSES,
   SET_CLEAN_EXPENSES,
+  SET_INVOICE_MONTHS,
+  GET_IMPORT_SCHEDULER,
+  SET_IMPORT_SCHEDULER,
   SET_EXPENSES_SUMMARY,
   SET_ASSIGNMENT_RULES,
   SET_ASSIGNMENT_RULE,
@@ -34,6 +37,9 @@ import {
   SET_TTL_ANALYSIS,
   SET_FINOPS_CHECKLIST,
   SET_CLUSTER_TYPES,
+  SET_VIRTUAL_TAGS,
+  SET_VIRTUAL_TAG,
+  SET_VIRTUAL_TAG_RULES,
   SET_ENVIRONMENTS,
   SET_ENVIRONMENT_BOOKINGS,
   CREATE_WEBHOOK,
@@ -284,6 +290,18 @@ const reducer = (state = {}, action) => {
         [action.label]: action.payload,
       };
     }
+    case SET_INVOICE_MONTHS: {
+      return {
+        ...state,
+        [action.label]: action.payload,
+      };
+    }
+    case SET_IMPORT_SCHEDULER: {
+      return {
+        ...state,
+        [GET_IMPORT_SCHEDULER]: action.payload,
+      };
+    }
     case SET_EXPENSES_SUMMARY: {
       return {
         ...state,
@@ -466,6 +484,31 @@ const reducer = (state = {}, action) => {
         ...state,
         [action.label]: {
           clusterTypes: [...action.payload.cluster_types],
+        },
+      };
+    }
+    case SET_VIRTUAL_TAGS: {
+      return {
+        ...state,
+        [action.label]: {
+          virtualTags: [...(action.payload.virtual_tags || [])],
+          quarters: [...(action.payload.quarters || [])],
+        },
+      };
+    }
+    case SET_VIRTUAL_TAG: {
+      return {
+        ...state,
+        [action.label]: {
+          virtualTag: action.payload,
+        },
+      };
+    }
+    case SET_VIRTUAL_TAG_RULES: {
+      return {
+        ...state,
+        [action.label]: {
+          virtualTagRules: [...(action.payload.virtual_tag_rules || [])],
         },
       };
     }

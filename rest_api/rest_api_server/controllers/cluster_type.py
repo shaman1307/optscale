@@ -2,6 +2,7 @@ import logging
 import uuid
 import tools.optscale_time as opttime
 
+from collections import Counter, defaultdict
 from pymongo import ReturnDocument, UpdateMany, UpdateOne
 from retrying import retry
 from sqlalchemy import exists
@@ -13,6 +14,8 @@ from rest_api.rest_api_server.controllers.base import (
 from rest_api.rest_api_server.controllers.base_async import BaseAsyncControllerWrapper
 from rest_api.rest_api_server.controllers.employee import EmployeeController
 from rest_api.rest_api_server.controllers.rule_apply import RuleApplyController
+from rest_api.rest_api_server.controllers.virtual_tag_apply import (
+    VirtualTagApplyController)
 from rest_api.rest_api_server.exceptions import Err
 from rest_api.rest_api_server.models.enums import AssignmentRequestStatuses
 from rest_api.rest_api_server.models.models import (
@@ -20,7 +23,7 @@ from rest_api.rest_api_server.models.models import (
     ResourceConstraint, ShareableBooking)
 from rest_api.rest_api_server.utils import (
     RetriableException, should_retry, encoded_tags, update_tags,
-    timestamp_to_day_start)
+    timestamp_to_day_start, current_quarter)
 
 from tools.optscale_exceptions.common_exc import (
     WrongArgumentsException, ConflictException, NotFoundException)
@@ -38,7 +41,10 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
         super().__init__(db_session, config, token, engine)
         self._cluster_inherited_fields = [
             'active', 'first_seen', 'last_seen', 'tags', '_first_seen_date',
-            '_last_seen_date']
+            '_last_seen_date', 'cloud_account_id']
+        self._cluster_assigned_fields = [
+            'pool_id', 'employee_id', 'applied_rules',
+            'virtual_tags', 'virtual_tags_by_quarter']
 
     def _get_model_type(self):
         return ClusterType
@@ -188,6 +194,9 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
             'cluster_type_id', 'cloud_resource_id', 'deleted_at']}
         updates = {k: cluster.pop(k, None)
                    for k in self._cluster_inherited_fields}
+        for k in self._cluster_assigned_fields:
+            if k in cluster:
+                updates[k] = cluster.pop(k)
         obj = self.resources_collection.find_one_and_update(
             filters, {
                 '$setOnInsert': cluster,
@@ -197,10 +206,28 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
         return obj
 
     @staticmethod
-    def _fill_cluster(organization_id, cluster_type, name, now):
+    def _virtual_tags_by_quarter(vt_apply, organization_id):
+        grouped = defaultdict(list)
+        for vt in vt_apply.load_org_virtual_tags(organization_id):
+            grouped[vt.quarter or current_quarter()].append(vt)
+        return grouped
+
+    def _assign_and_tag_cluster(self, organization_id, cluster, rules, rac,
+                                vt_apply, vts_by_quarter):
+        cluster, _ = rac.handle_assignment_data(
+            organization_id, cluster, None, {}, rules)
+        for quarter, defs in vts_by_quarter.items():
+            cluster, _ = vt_apply.apply_to_resource(
+                cluster, virtual_tags=defs,
+                organization_id=organization_id, quarter=quarter)
+        return cluster
+
+    @staticmethod
+    def _fill_cluster(organization_id, cluster_type, name, now,
+                      cloud_account_id=None):
         cl_id = ClusterTypeController.get_cluster_cloud_resource_id(
             cluster_type.name, name)
-        return {
+        cluster = {
             '_id': str(uuid.uuid4()),
             'created_at': now,
             'deleted_at': 0,
@@ -212,10 +239,29 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
             'cloud_resource_id': cl_id,
             'tags': {},
         }
+        if cloud_account_id:
+            cluster['cloud_account_id'] = cloud_account_id
+        return cluster
+
+    @staticmethod
+    def _resolve_cluster_cloud_account_id(changes):
+        ids = [
+            change.get('cloud_account_id') for change in changes
+            if change.get('cloud_account_id')]
+        if not ids:
+            return None
+        counts = Counter(ids)
+        if len(counts) == 1:
+            return ids[0]
+        return counts.most_common(1)[0][0]
 
     @staticmethod
     def _set_cluster_lifetime_fields(cluster, changes):
         tag_exclusions = set()
+        cloud_account_id = ClusterTypeController._resolve_cluster_cloud_account_id(
+            changes)
+        if cloud_account_id:
+            cluster['cloud_account_id'] = cloud_account_id
         for change in changes:
             cluster['active'] = cluster.get(
                 'active', False) | change.get('active', False)
@@ -265,7 +311,8 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
                 'first_seen': r.get('first_seen'),
                 'last_seen': r.get('last_seen'),
                 'active': r.get('active', False),
-                'tags': r.get('tags', {})
+                'tags': r.get('tags', {}),
+                'cloud_account_id': r.get('cloud_account_id'),
             })
 
         for cluster_id, cluster in clusters_map.items():
@@ -346,7 +393,8 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
                 cluster = clusters_definitions_map.get(cluster_cid)
                 if not cluster:
                     cluster = self._fill_cluster(
-                        organization_id, c_type, c_name, now)
+                        organization_id, c_type, c_name, now,
+                        cloud_account_id=resource.get('cloud_account_id'))
 
             db_resource_tags = encoded_tags(
                 db_resource.get('tags', {}), decode=True)
@@ -363,7 +411,9 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
                 'first_seen': first_seen,
                 'last_seen': last_seen,
                 'active': resource.get('active', False),
-                'tags': resource_tags
+                'tags': resource_tags,
+                'cloud_account_id': resource.get(
+                    'cloud_account_id') or db_resource.get('cloud_account_id'),
             }
             if not cluster_cid_changes_map.get(cluster_cid):
                 cluster_cid_changes_map[cluster_cid] = []
@@ -372,12 +422,17 @@ class ClusterTypeController(BaseController, MongoMixin, PriorityMixin):
             rss_cluster_requirement_map[resource_unique_id] = cluster_cid
 
         rac = RuleApplyController(self.session, self._config, self.token)
+        vt_apply = VirtualTagApplyController(
+            self.session, self._config, self.token)
+        vts_by_quarter = self._virtual_tags_by_quarter(
+            vt_apply, organization_id)
         for cluster_cid, cluster in clusters_definitions_map.items():
             changes = cluster_cid_changes_map.get(cluster_cid)
             if changes:
                 self._set_cluster_lifetime_fields(cluster, changes)
-            cluster, _ = rac.handle_assignment_data(
-                organization_id, cluster, None, {}, rules)
+            cluster = self._assign_and_tag_cluster(
+                organization_id, cluster, rules, rac, vt_apply,
+                vts_by_quarter)
             cluster['tags'] = encoded_tags(cluster['tags'])
             cluster = self.get_or_create(cluster)
             clusters_map[cluster['_id']] = cluster
@@ -495,12 +550,14 @@ class ClusterTypeApplyController(ClusterTypeController):
             cluster = clusters_map.get(cluster_cid)
             if not cluster:
                 cluster = self._fill_cluster(
-                    organization_id, c_type, c_name, now)
+                    organization_id, c_type, c_name, now,
+                    cloud_account_id=resource.get('cloud_account_id'))
             change = {
                 'first_seen': resource.get('first_seen'),
                 'last_seen': resource.get('last_seen'),
                 'active': resource.get('active', False),
-                'tags': resource.get('tags', {})
+                'tags': resource.get('tags', {}),
+                'cloud_account_id': resource.get('cloud_account_id'),
             }
             if not cluster_cid_changes_map.get(cluster_cid):
                 cluster_cid_changes_map[cluster_cid] = []
@@ -514,13 +571,18 @@ class ClusterTypeApplyController(ClusterTypeController):
         rac = RuleApplyController(self.session, self._config, self.token)
         _, employee_allowed_pools = rac.collect_relations(ca_ids)
         rules = rac.get_valid_rules(organization_id, employee_allowed_pools)
+        vt_apply = VirtualTagApplyController(
+            self.session, self._config, self.token)
+        vts_by_quarter = self._virtual_tags_by_quarter(
+            vt_apply, organization_id)
         for cluster in clusters_map.copy().values():
             changes = cluster_cid_changes_map.get(cluster['cloud_resource_id'], [])
             if changes:
                 self._set_cluster_lifetime_fields(cluster, changes)
             cluster['tags'] = encoded_tags(cluster.get('tags', {}), decode=True)
-            cluster, _ = rac.handle_assignment_data(
-                organization_id, cluster, None, {}, rules)
+            cluster = self._assign_and_tag_cluster(
+                organization_id, cluster, rules, rac, vt_apply,
+                vts_by_quarter)
             cluster['tags'] = encoded_tags(cluster['tags'])
             cluster = self.get_or_create(cluster)
             clusters_map[cluster['cloud_resource_id']] = cluster
@@ -547,18 +609,21 @@ class ClusterTypeApplyController(ClusterTypeController):
 
             for resource in resources:
                 clustered_resource_ids.append(resource['_id'])
-                if resource.get('cluster_id') == cluster['_id']:
-                    continue
-                new_clustered_resource_ids.append(resource['_id'])
-                for prop in ['pool_id', 'employee_id']:
-                    resource[prop] = cluster.get(prop)
-                resource['applied_rules'] = cluster.get('applied_rules', [])
-                resource['cluster_id'] = cluster['_id']
-                resource_update_fields = ['pool_id', 'employee_id',
-                                          'cluster_id', 'applied_rules']
-                if resource.get('shareable'):
-                    resource['shareable'] = False
-                    resource_update_fields.append('shareable')
+                already_clustered = (
+                    resource.get('cluster_id') == cluster['_id'])
+                resource['tags'] = encoded_tags(
+                    resource.get('tags', {}), decode=True)
+                resource, _ = rac.handle_assignment_data(
+                    organization_id, resource, None, {}, rules)
+                resource_update_fields = [
+                    'pool_id', 'employee_id', 'applied_rules']
+                if not already_clustered:
+                    new_clustered_resource_ids.append(resource['_id'])
+                    resource['cluster_id'] = cluster['_id']
+                    resource_update_fields.append('cluster_id')
+                    if resource.get('shareable'):
+                        resource['shareable'] = False
+                        resource_update_fields.append('shareable')
                 resource_update_chunk.append(UpdateOne(
                     filter={'_id': resource['_id']},
                     update={

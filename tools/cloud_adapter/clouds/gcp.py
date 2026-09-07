@@ -1,9 +1,9 @@
 from collections import defaultdict
 from functools import cached_property
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 from datetime import datetime, timezone, timedelta
-from typing import Dict
+import calendar
 import hashlib
 import logging
 
@@ -156,6 +156,8 @@ BASE_CONSOLE_LINK = "https://console.cloud.google.com"
 DEFAULT_CURRENCY = "USD"
 OPTSCALE_TRACKING_TAG = "optscale_tracking_id"
 STANDARD_BILLING_PREFIX = "gcp_billing_export_v1"
+# Detailed/resource-level export (has resource.name / resource.global_name).
+RESOURCE_BILLING_PREFIX = "gcp_billing_export_resource_v1"
 
 COMPUTE_SERVICE_ID = "6F81-5844-456A"
 
@@ -385,9 +387,10 @@ class GcpResource:
         raise NotImplemented()
 
     def post_discover(self):
-        if not self._need_to_update_tags():
-            return
-        self._set_tag(OPTSCALE_TRACKING_TAG, self.cloud_resource_hash)
+        # Do not write optscale_tracking_id labels back to GCP.
+        # Failed set_labels (e.g. missing IAM) used to retry on every discovery
+        # cycle for every resource and hammer Google Compute/Storage APIs.
+        return
 
     def _get_project_id(self):
         return self._cloud_adapter.project_id
@@ -759,6 +762,14 @@ class Gcp(CloudBase):
     # so we will limit the discovery worker parallelism for gcp instead.
     MAX_PARALLEL_REQUESTS = 10
 
+    # Virtual CAs for billing export rows where project.id IS NULL.
+    # Legacy single bucket (no longer created; kept to drain old CAs safely).
+    UNASSIGNED_PROJECT_ID = '__gcp_unassigned__'
+    UNASSIGNED_PROJECT_NAME = 'Unassigned GCP billing'
+    # Per-service virtual CAs: matches billing view
+    # COALESCE(project.name, service.description) for null project.id.
+    VIRTUAL_SERVICE_PREFIX = '__gcp_svc__'
+
     BILLING_CREDS = [
         CloudParameter(name="project_id", type=str, required=False),
         CloudParameter(
@@ -769,6 +780,12 @@ class Gcp(CloudBase):
                 CloudParameter(name="project_id", type=str, required=False),
                 CloudParameter(name="dataset_name", type=str, required=True),
                 CloudParameter(name="table_name", type=str, required=True),
+                # Optional detailed export for resource identity / discovery
+                # merge. When set, usage import reads this table (cost+identity
+                # in one scan). Standard table_name stays required for
+                # validation / connection checks.
+                CloudParameter(
+                    name="resource_table_name", type=str, required=False),
             ],
         ),
         CloudParameter(
@@ -795,7 +812,24 @@ class Gcp(CloudBase):
             region = REGION_REPLACEMENTS.get(region_lower, region_lower)
         return region
 
+    @classmethod
+    def virtual_service_project_id(cls, service_or_name: str) -> str:
+        return f'{cls.VIRTUAL_SERVICE_PREFIX}{service_or_name}'
+
+    @classmethod
+    def parse_virtual_service(cls, project_id: str):
+        if project_id and project_id.startswith(cls.VIRTUAL_SERVICE_PREFIX):
+            return project_id[len(cls.VIRTUAL_SERVICE_PREFIX):]
+        return None
+
+    @staticmethod
+    def _sql_quote(value: str) -> str:
+        return str(value).replace('\\', '\\\\').replace('"', '\\"')
+
     def discovery_calls_map(self):
+        # Billing-only virtual CAs have no Compute/Storage APIs to discover.
+        if self.is_virtual_billing_project:
+            return {}
         return {
             tools.cloud_adapter.model.VolumeResource: self.volume_discovery_calls,
             tools.cloud_adapter.model.InstanceResource: self.instance_discovery_calls,
@@ -807,7 +841,121 @@ class Gcp(CloudBase):
 
     @property
     def project_id(self):
-        return self.config.get("project_id") or self.credentials.get("project_id")
+        return self.config.get("project_id") or (self.credentials or {}).get(
+            "project_id")
+
+    @property
+    def is_unassigned_project(self) -> bool:
+        return self.project_id == self.UNASSIGNED_PROJECT_ID
+
+    @property
+    def is_virtual_billing_project(self) -> bool:
+        """True for legacy unassigned or per-service null-project CAs."""
+        pid = self.project_id
+        if not pid:
+            return False
+        return (
+            pid == self.UNASSIGNED_PROJECT_ID or
+            pid.startswith(self.VIRTUAL_SERVICE_PREFIX)
+        )
+
+    def _billing_project_filter_sql(self, alias: str = "billing") -> str:
+        """SQL predicate for this CA's billing rows.
+
+        Real projects match project.id. Virtual service CAs match null
+        project.id buckets named like the billing view:
+        COALESCE(project.name, service.description).
+        Legacy __gcp_unassigned__ matches nothing (avoids double-count).
+        """
+        service = self.parse_virtual_service(self.project_id or '')
+        if service is not None:
+            safe = self._sql_quote(service)
+            return (
+                f'{alias}.project.id IS NULL AND '
+                f'COALESCE({alias}.project.name, {alias}.service.description) '
+                f'= "{safe}"'
+            )
+        if self.is_unassigned_project:
+            return 'FALSE'
+        return f'{alias}.project.id = "{self.project_id}"'
+
+    @staticmethod
+    def previous_calendar_month_start(dt: datetime) -> datetime:
+        """First instant of the calendar month before ``dt``."""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.month == 1:
+            return datetime(dt.year - 1, 12, 1, tzinfo=dt.tzinfo)
+        return datetime(dt.year, dt.month - 1, 1, tzinfo=dt.tzinfo)
+
+    @staticmethod
+    def invoice_months_for_window(start_date, end_date) -> List[str]:
+        """YYYYMM invoice months overlapping [start_date, end_date)."""
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+        months = []
+        y, m = start_date.year, start_date.month
+        for _ in range(48):
+            month_start = datetime(y, m, 1, tzinfo=timezone.utc)
+            if m == 12:
+                month_end = datetime(y + 1, 1, 1, tzinfo=timezone.utc)
+            else:
+                month_end = datetime(y, m + 1, 1, tzinfo=timezone.utc)
+            if month_start >= end_date:
+                break
+            if month_end > start_date:
+                months.append(f'{y:04d}{m:02d}')
+            if m == 12:
+                y, m = y + 1, 1
+            else:
+                m += 1
+        return months
+
+    @staticmethod
+    def remap_timestamp_to_invoice_month(ts, invoice_month: str):
+        """Move timestamp into invoice YYYYMM; keep day (clamped) and clock time."""
+        if ts is None or not invoice_month:
+            return ts
+        year = int(str(invoice_month)[:4])
+        month = int(str(invoice_month)[4:6])
+        max_day = calendar.monthrange(year, month)[1]
+        day = min(int(ts.day), max_day)
+        return ts.replace(year=year, month=month, day=day)
+
+    def _billing_window_filter_sql(
+            self, start_date, end_date, alias: str = "billing") -> str:
+        """Time window predicate for get_usage.
+
+        Scan only partitions in [start, end). Late-exported rows for older
+        usage_start land in newer partitions; do not filter usage_start or
+        they are dropped. The importer upserts those rows into the Mongo day
+        of usage_start without wiping that day.
+
+        Real projects: tight _PARTITIONTIME + project.id.
+        Virtual CAs: invoice.month IN (…) (management view) + tight partitions.
+        """
+        part_start = start_date
+        if self.is_virtual_billing_project:
+            # Invoice-month rows can have usage_start in the previous
+            # calendar month (CUD restatements). Scan that month's
+            # partitions too or Mongo/BQ invoice totals diverge.
+            part_start = self.previous_calendar_month_start(start_date)
+        part = (
+            f'{alias}._PARTITIONTIME >= TIMESTAMP("{part_start}") AND '
+            f'{alias}._PARTITIONTIME < TIMESTAMP("{end_date}")'
+        )
+        if not self.is_virtual_billing_project:
+            return part
+        months = self.invoice_months_for_window(start_date, end_date)
+        if not months:
+            return 'FALSE'
+        months_sql = ', '.join(f'"{m}"' for m in months)
+        return (
+            f'{alias}.invoice.month IN ({months_sql}) AND '
+            f'{part}'
+        )
 
     @property
     def credentials(self):
@@ -834,6 +982,15 @@ class Gcp(CloudBase):
         return self.billing_data.get("table_name", "")
 
     @property
+    def billing_resource_table(self) -> str:
+        """Optional detailed/resource-level billing export table name."""
+        return self.billing_data.get("resource_table_name", "") or ""
+
+    @property
+    def uses_detailed_billing_export(self) -> bool:
+        return bool(self.billing_resource_table)
+
+    @property
     def billing_project_id(self) -> str:
         return self.billing_data.get("project_id", self.project_id)
 
@@ -855,9 +1012,12 @@ class Gcp(CloudBase):
 
     @cached_property
     def bigquery_client(self):
+        # Run jobs in the billing project. Tenant children often lack BigQuery
+        # API on the spend project; the shared billing export still lives in
+        # billing_data.project_id.
         return bigquery.Client.from_service_account_info(
             self.credentials,
-            project=self.project_id,
+            project=self.billing_project_id,
         )
 
     @cached_property
@@ -945,6 +1105,24 @@ class Gcp(CloudBase):
     def _billing_table_full_name(self):
         return f"{self.billing_project_id}.{self.billing_dataset}.{self.billing_table}"
 
+    def _billing_resource_table_full_name(self):
+        if not self.billing_resource_table:
+            return None
+        return (
+            f"{self.billing_project_id}.{self.billing_dataset}."
+            f"{self.billing_resource_table}"
+        )
+
+    def _usage_table_full_name(self):
+        """Table used for get_usage / cost import.
+
+        When resource_table_name is configured, read the detailed export so
+        each row carries resource.global_name for discovery merge. Standard
+        table_name alone cannot attach per-VM identity (grain is SKU-level).
+        """
+        detailed = self._billing_resource_table_full_name()
+        return detailed or self._billing_table_full_name()
+
     @staticmethod
     def _get_billing_threshold_date():
         # billing threshold means datasets should be updated at least 3 days ago
@@ -966,6 +1144,20 @@ class Gcp(CloudBase):
             raise tools.cloud_adapter.exceptions.CloudSettingNotSupported(
                 'Currency "%s" is not supported' % dict(result).get("currency")
             )
+        detailed = self._billing_resource_table_full_name()
+        if detailed:
+            query = f"""
+                SELECT currency
+                FROM `{detailed}`
+                WHERE TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) >= TIMESTAMP("{dt}")
+                LIMIT 1
+            """
+            try:
+                list(self.bigquery_client.query(query, **DEFAULT_KWARGS).result())
+            except Exception as e:
+                raise tools.cloud_adapter.exceptions.CloudSettingNotSupported(
+                    f'Invalid billing resource_table_name: {str(e)}'
+                )
         if self.pricing_data:
             query = f"""
                 SELECT pricing_unit
@@ -986,6 +1178,13 @@ class Gcp(CloudBase):
             raise tools.cloud_adapter.exceptions.InvalidParameterException(
                 "Invalid billing type. Expected billing type to be Standard."
             )
+        if (self.billing_resource_table and
+                not self.billing_resource_table.startswith(
+                    RESOURCE_BILLING_PREFIX)):
+            raise tools.cloud_adapter.exceptions.InvalidParameterException(
+                "Invalid billing resource_table_name. Expected prefix "
+                f"{RESOURCE_BILLING_PREFIX}."
+            )
 
     def _validate_billing_config(self):
         if "." in self.billing_dataset:
@@ -995,6 +1194,11 @@ class Gcp(CloudBase):
         if "." in self.billing_table:
             raise tools.cloud_adapter.exceptions.InvalidParameterException(
                 "Invalid billing table_name. Should specify dataset_name and table_name separately."
+            )
+        if self.billing_resource_table and "." in self.billing_resource_table:
+            raise tools.cloud_adapter.exceptions.InvalidParameterException(
+                "Invalid billing resource_table_name. Should specify "
+                "dataset_name and table name separately."
             )
 
     def _validate_project_id(self):
@@ -1012,11 +1216,25 @@ class Gcp(CloudBase):
             )
 
     def validate_credentials(self, org_id=None):
+        warnings = []
         try:
             self._validate_project_id()
             self._validate_billing_config()
             self._validate_billing_type()
-            self._validate_cloud_connection()
+            try:
+                self._validate_cloud_connection()
+            except Exception as ex:
+                # Shared billing export (tenant children): Compute Engine is
+                # often disabled on the spend project. Billing import only
+                # needs BigQuery against billing_data.project_id — keep CA.
+                # Same for virtual null-project CAs (no real GCP project).
+                if (self.is_virtual_billing_project or
+                        self.billing_project_id != self.project_id):
+                    warnings.append(
+                        'Cloud API check failed (discovery may not work): %s'
+                        % ex)
+                else:
+                    raise
             self._test_bigquery_connection()
         except api_exceptions.Forbidden as ex:
             # remove new-lines, otherwise tornado will fail to write response
@@ -1025,35 +1243,192 @@ class Gcp(CloudBase):
             )
         except Exception as ex:
             raise tools.cloud_adapter.exceptions.CloudConnectionError(str(ex))
-        return {"account_id": self.project_id, "warnings": []}
+        return {"account_id": self.project_id, "warnings": warnings}
 
     def get_usage(self, start_date, end_date):
-        table_name = self._billing_table_full_name()
+        """Stream billing rows for [start_date, end_date).
+
+        One BigQuery job covers the whole window. Rows stay ordered so the
+        importer can merge duplicate billing lines while streaming.
+
+        invoice.month is always selected (parallel to usage dates). Virtual
+        (null-project) CAs also filter and ORDER BY it for the upsert key.
+        Expense dates stay on BQ usage_start_time / usage_end_time. Real
+        projects do not filter or sort by invoice.month.
+
+        When billing_data.resource_table_name is set, reads the detailed
+        export (resource.name / global_name) so expenses merge with discovery
+        by numeric cloud_resource_id.
+        """
+        table_name = self._usage_table_full_name()
+        project_filter = self._billing_project_filter_sql()
+        time_filter = self._billing_window_filter_sql(start_date, end_date)
+        invoice_select = 'billing.invoice.month as invoice_month,'
+        order_prefix = (
+            'invoice_month,\n            '
+            if self.is_virtual_billing_project else ''
+        )
+        resource_select = (
+            'billing.resource.name as resource_name,\n'
+            '            billing.resource.global_name as resource_global_name,'
+            if self.uses_detailed_billing_export else ''
+        )
         query = f"""
         SELECT
-            service.description as service,
-            usage_start_time as start_date,
-            usage_end_time as end_date,
-            export_time, cost, cost_type, location,
-            currency, currency_conversion_rate,
-            sku.description as sku,
-            sku.id as sku_id,
-            labels as tags,
-            usage.amount as usage_amount,
-            usage.unit as usage_unit,
-            usage.amount_in_pricing_units as usage_amount_in_pricing_units,
-            usage.pricing_unit as usage_pricing_unit,
-            system_labels as system_tags,
-            credits, adjustment_info
-        FROM `{table_name}`
+            billing.service.description as service,
+            billing.usage_start_time as start_date,
+            billing.usage_end_time as end_date,
+            {invoice_select}
+            billing.export_time, billing.cost, billing.cost_type, billing.location,
+            billing.currency, billing.currency_conversion_rate,
+            billing.sku.description as sku,
+            billing.sku.id as sku_id,
+            {resource_select}
+            billing.labels as tags,
+            billing.usage.amount as usage_amount,
+            billing.usage.unit as usage_unit,
+            billing.usage.amount_in_pricing_units as usage_amount_in_pricing_units,
+            billing.usage.pricing_unit as usage_pricing_unit,
+            billing.system_labels as system_tags,
+            billing.credits, billing.adjustment_info
+        FROM `{table_name}` AS billing
         WHERE
-            TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) = TIMESTAMP("{start_date}") AND
-            project.id = "{self.project_id}"
+            {time_filter} AND
+            {project_filter}
+        ORDER BY
+            {order_prefix}start_date,
+            service,
+            sku_id,
+            sku,
+            IFNULL(location.region, ''),
+            IFNULL(location.zone, ''),
+            IFNULL(location.location, ''),
+            IFNULL(location.country, '')
         """
         return self.bigquery_client.query(
             query,
             **DEFAULT_KWARGS,
         )
+
+    def _billing_resource_type_sql(self, alias: str = "billing") -> str:
+        """SQL CASE matching GcpReportImporter._get_resource_type_and_name."""
+        sku = f"LOWER(IFNULL({alias}.sku.description, ''))"
+        svc = f"IFNULL({alias}.service.description, '')"
+        tagged = (
+            f'(SELECT COUNT(*) FROM UNNEST({alias}.labels) l '
+            f'WHERE l.key = "optscale_tracking_id") > 0'
+        )
+        return f"""
+        CASE
+            WHEN {alias}.cost_type = "tax" THEN "Tax"
+            WHEN {alias}.cost_type = "rounding_error" THEN "Rounding Error"
+            WHEN {alias}.cost_type = "adjustment" THEN "Adjustment"
+            WHEN {sku} LIKE "%snapshot%" THEN "Snapshot"
+            WHEN {sku} LIKE "%image%" THEN "Image"
+            WHEN {sku} LIKE "%pd capacity%" THEN "Volume"
+            WHEN {svc} = "Cloud Storage"
+                 AND ({sku} LIKE "%storage%" OR {tagged}) THEN "Bucket"
+            WHEN {sku} LIKE "%instance%"
+                 AND {sku} NOT LIKE "%discount%" THEN "Instance"
+            WHEN {svc} = "Compute Engine" AND {tagged}
+                 AND ({sku} LIKE "%ip charge on%"
+                      OR {sku} LIKE "%network%") THEN "Instance"
+            WHEN {sku} LIKE "%ip charge%" THEN "IP Address"
+            ELSE IFNULL({alias}.service.description, "Unknown")
+        END
+        """
+
+    def _billing_resource_id_sql(self, alias: str = "billing") -> str:
+        """Billed identity for COUNT DISTINCT — columns only, no row dump."""
+        tagged = (
+            f'(SELECT l.value FROM UNNEST({alias}.labels) l '
+            f'WHERE l.key = "optscale_tracking_id" LIMIT 1)'
+        )
+        sku_id = f"IFNULL({alias}.sku.id, {alias}.sku.description)"
+        if not self.uses_detailed_billing_export:
+            return f"COALESCE({tagged}, {sku_id})"
+        return (
+            f"COALESCE(NULLIF({alias}.resource.global_name, ''), "
+            f"{tagged}, {sku_id})"
+        )
+
+    def _billing_month_filter_sql(
+            self, month_start, month_end, partition_end, alias: str = "billing"):
+        """Current-month usage, partitions [month_start, partition_end).
+
+        usage_start keeps the calendar month; partition_end is tomorrow so
+        late-exported month rows in today's partition are included. Does not
+        SELECT raw billing rows.
+        """
+        part_start = month_start
+        if self.is_virtual_billing_project:
+            part_start = self.previous_calendar_month_start(month_start)
+        part = (
+            f'{alias}._PARTITIONTIME >= TIMESTAMP("{part_start}") AND '
+            f'{alias}._PARTITIONTIME < TIMESTAMP("{partition_end}")'
+        )
+        if self.is_virtual_billing_project:
+            months = self.invoice_months_for_window(month_start, month_end)
+            if not months:
+                return 'FALSE'
+            months_sql = ', '.join(f'"{m}"' for m in months)
+            return (
+                f'{alias}.invoice.month IN ({months_sql}) AND {part}'
+            )
+        return (
+            f'{alias}.usage_start_time >= TIMESTAMP("{month_start}") AND '
+            f'{alias}.usage_start_time < TIMESTAMP("{month_end}") AND '
+            f'{part}'
+        )
+
+    def get_usage_month_by_resource_type(
+            self, month_start, month_end, partition_end):
+        """The billed SUM query: SUM(cost+credits) grouped by resource type.
+
+        App code sums billed_sum across types for the fail-gate. Does not
+        stream raw billing rows and is not paired with a second ungrouped SUM.
+        """
+        table_name = self._usage_table_full_name()
+        project_filter = self._billing_project_filter_sql()
+        time_filter = self._billing_month_filter_sql(
+            month_start, month_end, partition_end)
+        type_sql = self._billing_resource_type_sql()
+        id_sql = self._billing_resource_id_sql()
+        query = f"""
+        SELECT
+            resource_type,
+            SUM(billed) AS billed_sum,
+            COUNT(DISTINCT resource_key) AS resource_count
+        FROM (
+            SELECT
+                {type_sql} AS resource_type,
+                {id_sql} AS resource_key,
+                cost + IFNULL(
+                    (SELECT SUM(c.amount) FROM UNNEST(credits) AS c),
+                    0
+                ) AS billed
+            FROM `{table_name}` AS billing
+            WHERE
+                {time_filter} AND
+                {project_filter}
+        )
+        GROUP BY resource_type
+        """
+        job = self.bigquery_client.query(query, **DEFAULT_KWARGS)
+        rows = []
+        for row in job.result():
+            try:
+                rtype = row["resource_type"]
+                billed = row["billed_sum"]
+                count = row["resource_count"]
+            except Exception:
+                rtype, billed, count = row[0], row[1], row[2]
+            rows.append({
+                'resource_type': rtype or 'Unknown',
+                'billed_sum': 0.0 if billed is None else float(billed),
+                'resource_count': 0 if count is None else int(count),
+            })
+        return rows
 
     @cached_property
     def regions(self):

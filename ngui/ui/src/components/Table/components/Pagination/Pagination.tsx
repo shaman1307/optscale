@@ -3,7 +3,7 @@ import MuiPagination from "@mui/material/Pagination";
 import PaginationItem from "@mui/material/PaginationItem";
 import useStyles from "./Pagination.styles";
 
-const Pagination = ({ count, paginationHandler, position = "right", page = 1 }) => {
+const Pagination = ({ count, paginationHandler, position = "right", page = 1, size = "medium" }) => {
   const { classes, cx } = useStyles();
 
   const wrapperClasses = cx(classes.wrapper, classes[position]);
@@ -11,6 +11,7 @@ const Pagination = ({ count, paginationHandler, position = "right", page = 1 }) 
   return (
     <Box className={wrapperClasses}>
       <MuiPagination
+        size={size}
         renderItem={({ type, page: pageNum, ...rest }) => {
           const itemId = type !== "previous" && type !== "next" ? `${pageNum}` : type;
           return <PaginationItem data-test-id={`btn_pagination_${itemId}`} page={pageNum} type={type} {...rest} />;

@@ -130,7 +130,7 @@ const prepareTableData = (groupedExpenses) =>
 
 const prepareChartData = (groupedData, expenses) => {
   // Utility data
-  const uniqueDays = getUniqueValuesFromObjectsByKey(expenses, "start_date").map((item) => formatISO(item));
+  const uniqueDays = getUniqueValuesFromObjectsByKey(expenses, "start_date").map((item) => formatISO(item)).filter(Boolean);
 
   // There might be multiple expenses and unit usages for the same date, but for different time. Sum that values by date.
   const formattedData = Object.entries(groupedData).reduce((result, [groupName, value]) => {
@@ -181,14 +181,18 @@ const prepareChartData = (groupedData, expenses) => {
     .sort((a, b) => (a.data.reduce((max, data) => max + data.y, 0) > b.data.reduce((max, data) => max + data.y, 0) ? 1 : -1));
 };
 
-export const getData = (expenses) => {
+export const getData = (expenses = []) => {
+  const items = Array.isArray(expenses) ? expenses : [];
   // dataSourceType is always the same, determine it once
-  const firstItem = expenses[0];
+  const firstItem = items[0];
   const dataSourceType = getCloudType(firstItem);
 
-  const groupedExpenses = expenses.reduce((result, item) => {
-    const category = getCategory(dataSourceType, item);
+  const groupedExpenses = items.reduce((result, item) => {
     const data = buildData(dataSourceType, item);
+    if (!data.date) {
+      return result;
+    }
+    const category = getCategory(dataSourceType, item) ?? "totalExpenses";
 
     return {
       ...result,
@@ -198,7 +202,7 @@ export const getData = (expenses) => {
 
   const tableData = prepareTableData(groupedExpenses);
 
-  const chartData = prepareChartData(groupedExpenses, expenses);
+  const chartData = prepareChartData(groupedExpenses, items);
 
   return { tableData, chartData };
 };

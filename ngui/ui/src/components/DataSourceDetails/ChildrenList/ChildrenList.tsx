@@ -5,10 +5,20 @@ import SubTitle from "components/SubTitle";
 import { useAllDataSources } from "hooks/coreData/useAllDataSources";
 import { isEmptyArray } from "utils/arrays";
 
-const ChildrenList = ({ parentId }) => {
+type ChildrenListProps = {
+  parentId?: string;
+  /** When set, selects children instead of filtering by parent_id (e.g. synthetic AWS tenant). */
+  filterChildren?: (dataSource: { id: string; name: string; type: string; parent_id?: string | null }) => boolean;
+};
+
+const ChildrenList = ({ parentId, filterChildren }: ChildrenListProps) => {
   const dataSources = useAllDataSources();
 
-  const childDataSources = dataSources.filter(({ parent_id: accountParentId }) => accountParentId === parentId);
+  const childDataSources = (
+    filterChildren
+      ? dataSources.filter(filterChildren)
+      : dataSources.filter(({ parent_id: accountParentId }) => accountParentId === parentId)
+  ).sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")));
 
   return (
     <>

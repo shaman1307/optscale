@@ -1,14 +1,14 @@
 import logging
 import uuid
 import tools.optscale_time as opttime
-from sqlalchemy import and_, true, or_, exists
+from sqlalchemy import and_, true, or_, exists, func
 import boto3
 from tools.optscale_exceptions.common_exc import (
     NotFoundException, FailedDependency, WrongArgumentsException,
     ConflictException
 )
 from boto3.session import Config as BotoConfig
-from kombu import Connection as QConnection, Exchange
+from kombu import Connection as QConnection, Exchange, Queue
 from kombu.pools import producers
 from tools.cloud_adapter.cloud import Cloud as CloudAdapter
 
@@ -18,47 +18,100 @@ from rest_api.rest_api_server.models.models import (ReportImport, CloudAccount,
                                                     Organization)
 from rest_api.rest_api_server.controllers.base import BaseController
 from rest_api.rest_api_server.controllers.base_async import BaseAsyncControllerWrapper
+from rest_api.rest_api_server.controllers.import_scheduler_docker import (
+    docker_control_enabled,
+    schedulers_enabled,
+    set_schedulers_enabled,
+)
 from rest_api.rest_api_server.controllers.checklist import ChecklistController
 from rest_api.rest_api_server.utils import (raise_unexpected_exception,
                                             check_int_attribute)
+from optscale_data.report_import_queue import report_import_queue_for_type
 
 ACTIVE_IMPORT_THRESHOLD = 1800  # 30 min
 DEFAULT_NOT_PROCESSED_REPORT_THRESHOLD_SECONDS = 10800  # 3 hrs
-DEFAULT_QUEUE_MESSAGE_EXPIRATION_SECONDS = 10800  # 3 hrs
+# Waiting GCP tenant reloads exceed 3h (workers busy on large projects).
+# 2026-08-15: 42 SCHEDULED messages expired at 3h while 6 siblings ran.
+DEFAULT_QUEUE_MESSAGE_EXPIRATION_SECONDS = 86400  # 24 hrs
 LOG = logging.getLogger(__name__)
+QUEUE_PRIORITY_ARGUMENTS = {'x-max-priority': 10}
+INCREMENTAL_SCHEDULER_ETCD_KEY = (
+    '/restapi/report_imports/incremental_scheduler_enabled')
+_SCHEDULER_DISABLED_VALUES = {'false', '0', 'no', ''}
 
 
 class ReportImportBaseController(BaseController):
     def _get_model_type(self):
         return ReportImport
 
-    REPORT_IMPORT_QUEUE = 'report-imports'
     RETRY_POLICY = {'max_retries': 15, 'interval_start': 0,
                     'interval_step': 1, 'interval_max': 3}
 
     def create(self, cloud_account_id, import_file=None, recalculate=False, priority=1):
+        # Fail stale unfinished rows first so a dead SCHEDULED/IN_PROGRESS
+        # cannot permanently block the account; callers still skip via
+        # check_unprocessed_imports when a fresh unfinished row remains.
+        self.fail_stale_imports(cloud_account_id)
         report_import = super().create(
             cloud_account_id=cloud_account_id,
             import_file=import_file,
             is_recalculation=recalculate
         )
-        self.publish_task({'report_import_id': report_import.id}, priority)
+        cloud_type = None
+        if report_import.cloud_account is not None:
+            cloud_type = report_import.cloud_account.type
+        try:
+            self.publish_task(
+                {'report_import_id': report_import.id},
+                priority,
+                cloud_type=cloud_type,
+            )
+        except Exception as exc:
+            # Avoid orphan SCHEDULED rows that can never be claimed.
+            reason = 'Failed to enqueue import task: {0}'.format(exc)
+            LOG.exception(
+                'Failed to publish report import %s: %s',
+                report_import.id, exc)
+            self.edit(
+                report_import.id,
+                state=ImportStates.FAILED.value,
+                state_reason=reason,
+            )
+            raise
         if recalculate:
             self._publish_report_import_activity(
                 report_import, 'recalculation_started')
         return report_import
 
-    def check_unprocessed_imports(self, cloud_account_id):
-        dt = opttime.utcnow().timestamp()
-        report_imports_setting = (
-            self._config.report_imports_setting() or {})
-        scheduled_threshold = dt - int(
+    def _import_age_thresholds(self):
+        # Use utcnow_timestamp() (not naive datetime.timestamp()) so cutoffs
+        # match created_at/updated_at, which are stored as UTC epoch seconds.
+        now_ts = opttime.utcnow_timestamp()
+        report_imports_setting = {}
+        if self._config is not None:
+            report_imports_setting = self._config.report_imports_setting() or {}
+        scheduled_threshold_secs = int(
             report_imports_setting.get(
                 'not_processed_threshold_secs',
                 DEFAULT_NOT_PROCESSED_REPORT_THRESHOLD_SECONDS
             )
         )
-        active_threshold = dt - ACTIVE_IMPORT_THRESHOLD
+        return {
+            'now_ts': now_ts,
+            'scheduled_threshold_secs': scheduled_threshold_secs,
+            'active_threshold_secs': ACTIVE_IMPORT_THRESHOLD,
+            'scheduled_cutoff': now_ts - scheduled_threshold_secs,
+            'active_cutoff': now_ts - ACTIVE_IMPORT_THRESHOLD,
+        }
+
+    def check_unprocessed_imports(self, cloud_account_id):
+        """True when a still-valid unfinished import blocks a new enqueue.
+
+        Call fail_stale_imports first. After that, only fresh SCHEDULED
+        (< not_processed_threshold, default 3h) and live IN_PROGRESS
+        (< ACTIVE_IMPORT_THRESHOLD) remain — those must not be duplicated.
+        """
+        thresholds = self._import_age_thresholds()
         return self.session.query(
             exists().where(and_(
                 ReportImport.cloud_account_id == cloud_account_id,
@@ -66,11 +119,11 @@ class ReportImportBaseController(BaseController):
                 or_(
                     and_(
                         ReportImport.state == ImportStates.SCHEDULED,
-                        ReportImport.created_at >= scheduled_threshold
+                        ReportImport.created_at >= thresholds['scheduled_cutoff']
                     ),
                     and_(
                         ReportImport.state == ImportStates.IN_PROGRESS,
-                        ReportImport.updated_at >= active_threshold
+                        ReportImport.updated_at >= thresholds['active_cutoff']
                     )
                 )
             ))
@@ -78,15 +131,148 @@ class ReportImportBaseController(BaseController):
 
     def check_in_progress_import(self, cloud_account_id):
         """True when a live import worker is still processing this account."""
-        active_threshold = opttime.utcnow().timestamp() - ACTIVE_IMPORT_THRESHOLD
+        thresholds = self._import_age_thresholds()
         return self.session.query(
             exists().where(and_(
                 ReportImport.cloud_account_id == cloud_account_id,
                 ReportImport.deleted_at.is_(False),
                 ReportImport.state == ImportStates.IN_PROGRESS,
-                ReportImport.updated_at >= active_threshold
+                ReportImport.updated_at >= thresholds['active_cutoff']
             ))
         ).scalar()
+
+    def unfinished_import_depths_by_type(self):
+        """Count SCHEDULED + IN_PROGRESS imports grouped by cloud account type.
+
+        Used by diworker to proportion worker slots across vendor queues.
+        """
+        rows = self.session.query(
+            CloudAccount.type,
+            func.count(ReportImport.id),
+        ).join(
+            ReportImport,
+            ReportImport.cloud_account_id == CloudAccount.id,
+        ).filter(
+            and_(
+                ReportImport.deleted.is_(False),
+                CloudAccount.deleted.is_(False),
+                ReportImport.state.in_([
+                    ImportStates.SCHEDULED,
+                    ImportStates.IN_PROGRESS,
+                ]),
+            )
+        ).group_by(CloudAccount.type).all()
+        depths = {}
+        for cloud_type, count in rows:
+            if not count:
+                continue
+            type_key = (
+                cloud_type.value if hasattr(cloud_type, 'value')
+                else str(cloud_type)
+            )
+            depths[type_key] = int(count)
+        return depths
+
+    def unfinished_imports(self):
+        """List unfinished imports for lost-import cleanup (id/state/type)."""
+        rows = self.session.query(
+            ReportImport.id,
+            ReportImport.state,
+            ReportImport.cloud_account_id,
+            ReportImport.created_at,
+            CloudAccount.type,
+        ).join(
+            CloudAccount,
+            ReportImport.cloud_account_id == CloudAccount.id,
+        ).filter(
+            and_(
+                ReportImport.deleted.is_(False),
+                CloudAccount.deleted.is_(False),
+                ReportImport.state.in_([
+                    ImportStates.SCHEDULED,
+                    ImportStates.IN_PROGRESS,
+                ]),
+            )
+        ).all()
+        unfinished = []
+        for import_id, state, cloud_account_id, created_at, cloud_type in rows:
+            type_key = (
+                cloud_type.value if hasattr(cloud_type, 'value')
+                else str(cloud_type)
+            )
+            state_key = state.value if hasattr(state, 'value') else str(state)
+            unfinished.append({
+                'id': import_id,
+                'state': state_key,
+                'cloud_account_id': cloud_account_id,
+                'cloud_type': str(type_key).lower(),
+                'created_at': created_at,
+            })
+        return unfinished
+
+    def _stale_import_reason(self, report_import, thresholds):
+        """Build a diagnostic reason from import state and age."""
+        now_ts = thresholds['now_ts']
+        if report_import.state == ImportStates.SCHEDULED:
+            age_secs = max(0, int(now_ts - (report_import.created_at or 0)))
+            threshold_mins = thresholds['scheduled_threshold_secs'] // 60
+            reason = (
+                'Import stuck in scheduled for {age} minutes '
+                '(threshold {threshold}m). Likely never claimed by diworker '
+                'or the queue message expired before processing started.'
+            ).format(age=age_secs // 60, threshold=threshold_mins)
+        else:
+            idle_secs = max(0, int(now_ts - (report_import.updated_at or 0)))
+            threshold_mins = thresholds['active_threshold_secs'] // 60
+            reason = (
+                'Import stuck in progress with no updates for {idle} minutes '
+                '(threshold {threshold}m). Likely diworker crashed, was OOM-'
+                'killed, or otherwise stopped updating this task.'
+            ).format(idle=idle_secs // 60, threshold=threshold_mins)
+
+        previous = (report_import.state_reason or '').strip()
+        if previous:
+            reason = '{reason} Previous reason: {previous}'.format(
+                reason=reason, previous=previous)
+        return reason
+
+    def fail_stale_imports(self, cloud_account_id):
+        """Mark stale unfinished imports as FAILED with a diagnostic reason.
+
+        SCHEDULED older than not_processed_threshold (default 3h) and
+        IN_PROGRESS idle longer than ACTIVE_IMPORT_THRESHOLD are killed so a
+        later schedule tick may enqueue a replacement. Fresh SCHEDULED rows
+        are left alone — check_unprocessed_imports blocks duplicates until
+        they age out or complete.
+        """
+        thresholds = self._import_age_thresholds()
+        stale_imports = self.session.query(ReportImport).filter(
+            and_(
+                ReportImport.cloud_account_id == cloud_account_id,
+                ReportImport.deleted_at.is_(False),
+                or_(
+                    and_(
+                        ReportImport.state == ImportStates.SCHEDULED,
+                        ReportImport.created_at < thresholds['scheduled_cutoff']
+                    ),
+                    and_(
+                        ReportImport.state == ImportStates.IN_PROGRESS,
+                        ReportImport.updated_at < thresholds['active_cutoff']
+                    )
+                )
+            )
+        ).all()
+        for stale_import in stale_imports:
+            reason = self._stale_import_reason(stale_import, thresholds)
+            LOG.warning(
+                'Failing stale report import %s for cloud account %s: %s',
+                stale_import.id, cloud_account_id, reason)
+            self.edit(
+                stale_import.id,
+                state=ImportStates.FAILED.value,
+                state_reason=reason,
+            )
+        return stale_imports
 
     def _publish_report_import_activity(self, report_import, action,
                                         level='INFO', error_reason=None):
@@ -146,12 +332,21 @@ class ReportImportBaseController(BaseController):
                 error_reason=error_reason, level='ERROR')
         return updated_report
 
-    def publish_task(self, task_params, priority=1):
+    def publish_task(self, task_params, priority=1, cloud_type=None):
         queue_conn = QConnection('amqp://{user}:{pass}@{host}:{port}'.format(
             **self._config.read_branch('/rabbit')),
             transport_options=self.RETRY_POLICY)
 
         task_exchange = Exchange('billing-reports', type='direct')
+        # Route each cloud type to its own queue so a flood of one provider
+        # (e.g. GCP) cannot starve another (e.g. Snowflake) behind it.
+        queue_name = report_import_queue_for_type(cloud_type)
+        task_queue = Queue(
+            queue_name,
+            task_exchange,
+            routing_key=queue_name,
+            queue_arguments=QUEUE_PRIORITY_ARGUMENTS,
+        )
         report_imports_setting = (
             self._config.report_imports_setting() or {})
         expiration = float(
@@ -165,8 +360,8 @@ class ReportImportBaseController(BaseController):
                 task_params,
                 serializer='json',
                 exchange=task_exchange,
-                declare=[task_exchange],
-                routing_key=self.REPORT_IMPORT_QUEUE,
+                declare=[task_exchange, task_queue],
+                routing_key=queue_name,
                 retry=True,
                 retry_policy=self.RETRY_POLICY,
                 expiration=expiration,
@@ -244,6 +439,14 @@ class ReportImportScheduleController(ReportImportBaseController):
             raise_unexpected_exception(kwargs.keys())
         self._check_args(
             organization_id, cloud_account_id, cloud_account_type, priority)
+        # report-import-scheduler-0/1/6/24 POST with period only. Manual
+        # reimport uses cloud_account_id / organization_id and must keep
+        # working when the schedulers are paused.
+        if period is not None and not self.is_incremental_scheduler_enabled():
+            LOG.info(
+                'Skipping period=%s schedule: import schedulers are stopped',
+                period)
+            return []
         if cloud_account_type is not None:
             cloud_account_type = CloudTypes(cloud_account_type)
 
@@ -256,6 +459,10 @@ class ReportImportScheduleController(ReportImportBaseController):
                 decoded_cfg = ca.decoded_config
                 if decoded_cfg.get('linked', False):
                     continue
+            # 1) Kill SCHEDULED >3h / idle IN_PROGRESS. 2) Skip if a fresh
+            # unfinished import still exists. 3) Otherwise enqueue a new one.
+            # Never enqueue while an un-killed SCHEDULED is still waiting.
+            self.fail_stale_imports(ca.id)
             if self.check_unprocessed_imports(ca.id):
                 # Manual schedule for a specific account must fail loudly so
                 # the UI can show that another import is already running.
@@ -265,6 +472,48 @@ class ReportImportScheduleController(ReportImportBaseController):
             result.append(self.create(ca.id, priority=priority))
         return result
 
+    def is_incremental_scheduler_enabled(self):
+        settings = {}
+        if self._config is not None:
+            try:
+                settings = self._config.report_imports_setting() or {}
+            except Exception:
+                settings = {}
+        raw = settings.get('incremental_scheduler_enabled', 'true')
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() not in _SCHEDULER_DISABLED_VALUES
+
+    def _require_organization(self, organization_id):
+        org = self.session.query(Organization).filter(
+            Organization.id == organization_id,
+            Organization.deleted.is_(False),
+        ).one_or_none()
+        if org is None:
+            raise NotFoundException(
+                Err.OE0002, [Organization.__name__, organization_id])
+        return org
+
+    def scheduler_status(self, organization_id):
+        self._require_organization(organization_id)
+        if docker_control_enabled():
+            return {'enabled': schedulers_enabled()}
+        return {'enabled': self.is_incremental_scheduler_enabled()}
+
+    def set_scheduler_enabled(self, organization_id, enabled):
+        self._require_organization(organization_id)
+        if docker_control_enabled():
+            return set_schedulers_enabled(enabled)
+        if self._config is None:
+            return {'enabled': bool(enabled)}
+        self._config.write(
+            key=INCREMENTAL_SCHEDULER_ETCD_KEY,
+            value='true' if enabled else 'false')
+        LOG.info(
+            'Incremental scheduler %s (org %s)',
+            'started' if enabled else 'stopped', organization_id)
+        return {'enabled': bool(enabled)}
+
 
 class ExpensesRecalculationScheduleController(ReportImportBaseController):
     def schedule(self, cloud_account_id):
@@ -272,7 +521,8 @@ class ExpensesRecalculationScheduleController(ReportImportBaseController):
             CloudAccount.deleted.is_(False),
             CloudAccount.type.in_([
                 CloudTypes.KUBERNETES_CNR, CloudTypes.ENVIRONMENT,
-                CloudTypes.DATABRICKS, CloudTypes.SNOWFLAKE]),
+                CloudTypes.DATABRICKS, CloudTypes.SNOWFLAKE,
+                CloudTypes.SNOWFLAKE_TENANT]),
             CloudAccount.id == cloud_account_id
         ).one_or_none()
 
@@ -415,3 +665,8 @@ class ReportImportAsyncController(BaseAsyncControllerWrapper):
 class ReportImportScheduleAsyncController(BaseAsyncControllerWrapper):
     def _get_controller_class(self):
         return ReportImportScheduleController
+
+
+class ReportImportQueueStatsAsyncController(BaseAsyncControllerWrapper):
+    def _get_controller_class(self):
+        return ReportImportBaseController

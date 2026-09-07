@@ -31,6 +31,8 @@ dev = [
     "mongomock==3.22.1",
     "pycodestyle==2.11.1",
     "pylint==3.0.2",
+    # mongomock still imports pkg_resources (setuptools).
+    "setuptools==80.9.0",
 ]
 [build-system]
 requires = ["uv_build==0.8.15"]

@@ -7,9 +7,15 @@ import BarChartLoader from "components/BarChartLoader";
 import { getBasicRangesSet } from "components/DateRangePicker/defaults";
 import PageContentWrapper from "components/PageContentWrapper";
 import PieChartLoader from "components/PieChartLoader";
-import RangePickerFormContainer from "containers/RangePickerFormContainer";
+import CostPeriodSelector from "components/CostPeriodSelector";
 import { useBreakdownData } from "hooks/useBreakdownData";
-import { getResourcesExpensesUrl, getOwnerExpensesUrl, getCloudExpensesUrl, getPoolExpensesUrl } from "urls";
+import {
+  DAILY_EXPENSES_BREAKDOWN_BY_PARAMETER_NAME,
+  getResourcesExpensesUrl,
+  getOwnerExpensesUrl,
+  getCloudExpensesUrl,
+  getPoolExpensesUrl,
+} from "urls";
 import { getColorsMapByIds } from "utils/charts";
 import {
   COST_EXPLORER,
@@ -28,15 +34,23 @@ import {
   K8S_NODE_FILTER,
   K8S_NAMESPACE_FILTER,
   OPTSCALE_RESOURCE_TYPES,
+  INVOICE_MONTHS_FILTER,
+  VIRTUAL_TAG_FILTER,
+  VENDOR_FILTER,
 } from "utils/constants";
+import { COST_PERIOD_BILLING, COST_PERIOD_DATE } from "utils/costPeriod";
+import { getVirtualTagKeyFromFilterBy, isVirtualTagBreakdown } from "utils/virtualTagBreakdown";
 import ExpensesBreakdownActionBar from "./ActionBar";
 import ExpensesBreakdownBarChart from "./BarChart";
 import ExpensesBreakdownBreakdownByButtonsGroup from "./BreakdownByButtonsGroup";
 import ExpensesBreakdownByPeriodWidget from "./BreakdownByPeriodWidget";
 import ExpensesBreakdownLayoutWrapper from "./LayoutWrapper";
 import ExpensesBreakdownPieChart from "./PieChart";
+import ExpensesBreakdownDataSourceFilter from "./DataSourceFilter";
+import ExpensesBreakdownRegionFilter from "./RegionFilter";
 import ExpensesBreakdownSummaryCards from "./SummaryCards";
 import ExpensesBreakdownTableWidget from "./TableWidget";
+import ExpensesBreakdownVendorFilter from "./VendorFilter";
 
 const ExpensesBreakdown = ({
   entityId,
@@ -48,12 +62,27 @@ const ExpensesBreakdown = ({
   filteredBreakdown,
   startDateTimestamp,
   endDateTimestamp,
+  invoiceMonths = [],
   isLoading,
+  loadProgress = null,
   onApply,
   updateFilter,
   name,
   dataSourceType,
   isInScopeOfPageMockup = false,
+  appliedRegionValues = [],
+  appliedCloudAccountValues = [],
+  appliedVendorValues = [],
+  showRegionFilter = false,
+  regionFilter,
+  regionFilterValues,
+  onRegionFilterChange,
+  cloudAccountFilter,
+  cloudAccountFilterValues,
+  onCloudAccountFilterChange,
+  vendorFilter,
+  onVendorFilterChange,
+  isRegionFilterLoading = false,
 }) => {
   const navigate = useNavigate();
   const theme = useTheme();
@@ -81,8 +110,21 @@ const ExpensesBreakdown = ({
     }[filterBy];
   };
 
-  const getFilterByEntity = (isTableWrapper = false) =>
-    ({
+  const getFilterByEntity = (isTableWrapper = false) => {
+    const regionParams = appliedRegionValues.length ? { [REGION_FILTER]: appliedRegionValues } : {};
+    const cloudAccountParams = appliedCloudAccountValues.length
+      ? { [CLOUD_ACCOUNT_ID_FILTER]: appliedCloudAccountValues }
+      : {};
+    const vendorParams = appliedVendorValues.length ? { [VENDOR_FILTER]: appliedVendorValues } : {};
+    const virtualTagContext = isVirtualTagBreakdown(filterBy)
+      ? {
+          [DAILY_EXPENSES_BREAKDOWN_BY_PARAMETER_NAME]: filterBy,
+          ...regionParams,
+          ...cloudAccountParams,
+          ...vendorParams,
+        }
+      : {};
+    return {
       [OWNER_DETAILS]: {
         [OWNER_ID_FILTER]: entityId,
       },
@@ -94,16 +136,43 @@ const ExpensesBreakdown = ({
             [POOL_ID_FILTER]: entityId,
           }
         : {},
-      [COST_EXPLORER]: {},
-    })[type];
+      [COST_EXPLORER]: virtualTagContext,
+    }[type];
+  };
 
-  const getComputedParams = (details) =>
-    ({
+  const getVirtualTagComputedParams = (details) => {
+    const tagKey = getVirtualTagKeyFromFilterBy(filterBy);
+    const valueId = details?.id;
+    const isUnset = valueId == null || valueId === "" || valueId === "(not set)";
+    const virtualTagParam = `${VIRTUAL_TAG_FILTER}=${isUnset ? EMPTY_UUID : `${tagKey}:${valueId}`}`;
+    const regionParams = appliedRegionValues.map((region) => `${REGION_FILTER}=${region}`);
+    const cloudAccountParams = appliedCloudAccountValues.map(
+      (cloudAccountId) => `${CLOUD_ACCOUNT_ID_FILTER}=${cloudAccountId}`
+    );
+    const vendorParams = appliedVendorValues.map((vendor) => `${VENDOR_FILTER}=${vendor}`);
+    return [
+      virtualTagParam,
+      `${DAILY_EXPENSES_BREAKDOWN_BY_PARAMETER_NAME}=${filterBy}`,
+      ...regionParams,
+      ...cloudAccountParams,
+      ...vendorParams,
+    ].join("&");
+  };
+
+  const getComputedParams = (details) => {
+    if (isVirtualTagBreakdown(filterBy)) {
+      return getVirtualTagComputedParams(details);
+    }
+    return {
       [EXPENSES_FILTERBY_TYPES.POOL]: `${POOL_ID_FILTER}=${details.id}`,
       [EXPENSES_FILTERBY_TYPES.CLOUD]:
         type === POOL_DETAILS
           ? `${CLOUD_ACCOUNT_ID_FILTER}=${details.id}&${POOL_ID_FILTER}=${entityId}`
           : `${CLOUD_ACCOUNT_ID_FILTER}=${details.id}`,
+      [EXPENSES_FILTERBY_TYPES.VENDOR]: (details.cloud_account_ids || [])
+        .map((cloudAccountId) => `${CLOUD_ACCOUNT_ID_FILTER}=${cloudAccountId}`)
+        .concat(type === POOL_DETAILS ? [`${POOL_ID_FILTER}=${entityId}`] : [])
+        .join("&"),
       [EXPENSES_FILTERBY_TYPES.EMPLOYEE]:
         type === POOL_DETAILS
           ? `${OWNER_ID_FILTER}=${details.id}&${POOL_ID_FILTER}=${entityId}`
@@ -115,7 +184,8 @@ const ExpensesBreakdown = ({
       [EXPENSES_FILTERBY_TYPES.RESOURCE_TYPE]: `${RESOURCE_TYPE_FILTER}=${details.name}:${OPTSCALE_RESOURCE_TYPES.REGULAR}`,
       [EXPENSES_FILTERBY_TYPES.NODE]: `${K8S_NODE_FILTER}=${details.id}`,
       [EXPENSES_FILTERBY_TYPES.NAMESPACE]: `${K8S_NAMESPACE_FILTER}=${details.id}`,
-    })[filterBy];
+    }[filterBy];
+  };
 
   const renderHeading = () => (
     <>
@@ -123,14 +193,35 @@ const ExpensesBreakdown = ({
         <ExpensesBreakdownSummaryCards total={total} previousTotal={previousTotal} isLoading={isLoading} />
       </Grid>
       <Grid item>
-        <RangePickerFormContainer
-          onApply={onApply}
+        <CostPeriodSelector
+          periodType={invoiceMonths.length ? COST_PERIOD_BILLING : COST_PERIOD_DATE}
+          onPeriodTypeChange={(nextType) => {
+            if (nextType === COST_PERIOD_DATE) {
+              onApply({
+                startDate: startDateTimestamp,
+                endDate: endDateTimestamp,
+                periodType: nextType,
+              });
+              return;
+            }
+            onApply({ invoiceMonths, periodType: nextType });
+          }}
+          onApplyDates={(range) => onApply({ ...range, periodType: COST_PERIOD_DATE })}
           initialStartDateValue={startDateTimestamp}
           initialEndDateValue={endDateTimestamp}
           rangeType="expenses"
           definedRanges={getBasicRangesSet()}
+          invoiceMonths={invoiceMonths}
+          onInvoiceMonthsChange={(months) =>
+            onApply({ invoiceMonths: months, periodType: COST_PERIOD_BILLING })
+          }
         />
       </Grid>
+      {loadProgress && (
+        <Grid item xs={12}>
+          {loadProgress}
+        </Grid>
+      )}
       {type !== COST_EXPLORER && (
         <Grid item xs={12}>
           <ExpensesBreakdownBreakdownByButtonsGroup
@@ -139,6 +230,30 @@ const ExpensesBreakdown = ({
             onClick={updateFilter}
             dataSourceType={dataSourceType}
           />
+        </Grid>
+      )}
+      {showRegionFilter && (
+        <Grid item xs={12}>
+          <Box display="flex" flexWrap="wrap" gap={1} alignItems="center">
+            <ExpensesBreakdownRegionFilter
+              regionFilterValues={regionFilterValues}
+              appliedFilter={regionFilter}
+              onChange={onRegionFilterChange}
+              isLoading={isRegionFilterLoading}
+            />
+            <ExpensesBreakdownDataSourceFilter
+              cloudAccountFilterValues={cloudAccountFilterValues}
+              appliedFilter={cloudAccountFilter}
+              onChange={onCloudAccountFilterChange}
+              isLoading={isRegionFilterLoading}
+            />
+            <ExpensesBreakdownVendorFilter
+              cloudAccountFilterValues={cloudAccountFilterValues}
+              appliedFilter={vendorFilter}
+              onChange={onVendorFilterChange}
+              isLoading={isRegionFilterLoading}
+            />
+          </Box>
         </Grid>
       )}
     </>
@@ -246,8 +361,9 @@ const ExpensesBreakdown = ({
           : navigate(
               getResourcesExpensesUrl({
                 ...getFilterByEntity(true),
-                sStartDate: startDateTimestamp,
-                sEndDate: endDateTimestamp,
+                ...(invoiceMonths.length
+                  ? { [INVOICE_MONTHS_FILTER]: invoiceMonths }
+                  : { sStartDate: startDateTimestamp, sEndDate: endDateTimestamp }),
               })
             )
       }
@@ -258,8 +374,9 @@ const ExpensesBreakdown = ({
               getResourcesExpensesUrl({
                 ...getFilterByEntity(),
                 computedParams: getComputedParams(rowData),
-                sStartDate: startDateTimestamp,
-                sEndDate: endDateTimestamp,
+                ...(invoiceMonths.length
+                  ? { [INVOICE_MONTHS_FILTER]: invoiceMonths }
+                  : { sStartDate: startDateTimestamp, sEndDate: endDateTimestamp }),
               })
             )
       }

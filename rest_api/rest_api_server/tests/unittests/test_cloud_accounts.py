@@ -8,15 +8,15 @@ from freezegun import freeze_time
 from sqlalchemy import and_
 from unittest.mock import patch, ANY, call
 from rest_api.rest_api_server.models.models import (
-    CloudAccount, DiscoveryInfo, OrganizationLimitHit, Organization)
+    CloudAccount, DiscoveryInfo, OrganizationLimitHit, Organization, ReportImport)
 from rest_api.rest_api_server.models.db_base import BaseDB
 from rest_api.rest_api_server.models.db_factory import DBType, DBFactory
 from rest_api.rest_api_server.utils import decode_config
 from rest_api.rest_api_server.controllers.cloud_account import (
-    CloudAccountController)
+    CloudAccountController, stage_target_cost_mismatch)
 from tools.cloud_adapter.exceptions import ReportConfigurationException
 from rest_api.rest_api_server.tests.unittests.test_api_base import TestApiBase
-from rest_api.rest_api_server.models.enums import CloudTypes
+from rest_api.rest_api_server.models.enums import CloudTypes, ImportStates
 from tools.cloud_adapter.cloud import Cloud as CloudAdapter
 
 
@@ -816,6 +816,13 @@ class TestCloudAccountApi(TestApiBase):
         self.assertEqual(code, 400)
         self.assertEqual(resp['error']['error_code'], 'OE0449')
 
+        # Retry/reschedule: same last_import_at (even in the current month)
+        # must not hit OE0559 — UI Retry sends the current cursor.
+        code, resp = self.client.cloud_account_update(
+            cloud_acc['id'], {'last_import_at': now})
+        self.assertEqual(code, 200)
+        self.assertEqual(resp['last_import_at'], now)
+
     def test_delete(self):
         mock_delete_expenses = patch(
             'rest_api.rest_api_server.controllers.expense.ExpenseController.'
@@ -1003,6 +1010,7 @@ class TestCloudAccountApi(TestApiBase):
                 cloud_acc1['id'], {
                     'cloud_resource_id': 'res_id_%s' % r_type,
                     'resource_type': r_type,
+                    'active': True,
                     'first_seen': int(day_in_month.timestamp()),
                     'last_seen': int(day_in_month.timestamp())
                 })
@@ -1045,7 +1053,10 @@ class TestCloudAccountApi(TestApiBase):
         code, res = self.client.discovery_info_list(
             cloud_acc1['id'])
         self.assertEqual(code, 200)
-        res_discovery_info = {di['id']: di for di in res['discovery_info']}
+        found_discovery_info = {
+            di['id']: di for di in res['discovery_info']
+            if di['resource_type'] in type_cost_map
+        }
 
         with freeze_time(datetime.datetime(2020, 1, 15)):
             code, cloud_acc = self.client.cloud_account_get(
@@ -1058,7 +1069,7 @@ class TestCloudAccountApi(TestApiBase):
             self.assertEqual(details['forecast'], 580)
             self.assertEqual(details['last_month_cost'], 360)
             self.assertEqual(details['resources'], 2)
-            self.assertDictEqual(cloud_discovery_info, res_discovery_info)
+            self.assertDictEqual(cloud_discovery_info, found_discovery_info)
 
     def test_get_details_deleted_res(self):
         self.valid_aws_cloud_acc['name'] = 'cloud_1'
@@ -1086,7 +1097,7 @@ class TestCloudAccountApi(TestApiBase):
         code, res = self.client.discovery_info_list(
             cloud_acc1['id'])
         self.assertEqual(code, 200)
-        res_discovery_info = {di['id']: di for di in res['discovery_info']}
+        self.assertGreater(len(res['discovery_info']), 0)
 
         self.resources_collection.update_one({'_id': resource['id']},
                                              {'$set': {'deleted_at': 1}})
@@ -1095,14 +1106,64 @@ class TestCloudAccountApi(TestApiBase):
             code, cloud_acc = self.client.cloud_account_get(
                 cloud_acc1['id'], details=True)
             details = cloud_acc['details']
-            cloud_discovery_info = {
-                di['id']: di for di in details['discovery_infos']
-            }
             self.assertEqual(details['cost'], 0)
             self.assertEqual(details['forecast'], 0)
             self.assertEqual(details['last_month_cost'], 0)
             self.assertEqual(details['resources'], 0)
-            self.assertDictEqual(cloud_discovery_info, res_discovery_info)
+            self.assertEqual(details['discovery_infos'], [])
+
+    def test_get_details_discovery_infos_only_found_types(self):
+        self.valid_aws_cloud_acc['name'] = 'cloud_1'
+        code, cloud_acc1 = self.create_cloud_account(
+            self.org_id, self.valid_aws_cloud_acc)
+        self.assertEqual(code, 201)
+
+        self.cloud_resource_create(
+            cloud_acc1['id'], {
+                'cloud_resource_id': 'i-1',
+                'resource_type': 'Instance',
+                'active': True,
+            })
+        # Billing-only resources must not appear in the Discovery table.
+        self.cloud_resource_create(
+            cloud_acc1['id'], {
+                'cloud_resource_id': 'sku-1',
+                'resource_type': 'Compute Engine',
+            })
+        # Inactive discovered types stay scheduled, but are hidden in details.
+        self.cloud_resource_create(
+            cloud_acc1['id'], {
+                'cloud_resource_id': 'vol-1',
+                'resource_type': 'Volume',
+                'active': False,
+            })
+
+        code, res = self.client.discovery_info_list(cloud_acc1['id'])
+        self.assertEqual(code, 200)
+        all_types = {di['resource_type'] for di in res['discovery_info']}
+        self.assertIn('instance', all_types)
+        self.assertIn('volume', all_types)
+        self.assertIn('bucket', all_types)
+
+        code, cloud_acc = self.client.cloud_account_get(
+            cloud_acc1['id'], details=True)
+        self.assertEqual(code, 200)
+        found_types = {
+            di['resource_type']
+            for di in cloud_acc['details']['discovery_infos']
+        }
+        self.assertEqual(found_types, {'instance'})
+
+        code, cloud_acc_list = self.client.cloud_account_list(
+            self.org_id, details=True)
+        self.assertEqual(code, 200)
+        listed = next(
+            acc for acc in cloud_acc_list['cloud_accounts']
+            if acc['id'] == cloud_acc1['id'])
+        listed_types = {
+            di['resource_type'] for di in listed['details']['discovery_infos']
+        }
+        self.assertEqual(listed_types, all_types)
 
     def test_patch_enable_import(self):
         ca_params = self.valid_aws_cloud_acc
@@ -1329,17 +1390,36 @@ class TestCloudAccountApi(TestApiBase):
                 cloud_acc['id'], params)
             self.assertEqual(code, 200)
 
+            # Same-cursor retry without secret must not hit OE0559 — UI Retry
+            # resends the current last_import_* value.
             patch('rest_api.rest_api_server.handlers.v1.base.BaseAuthHandler.'
                   'check_cluster_secret', return_value=False).start()
             code, resp = self.client.cloud_account_update(
                 cloud_acc['id'], params)
-            self.assertEqual(code, 400)
-            self.assertEqual(resp['error']['error_code'], 'OE0559')
+            self.assertEqual(code, 200)
 
             params = {param: now}
             code, resp = self.client.cloud_account_update(
                 cloud_acc['id'], params)
             self.assertEqual(code, 200)
+
+            # Historical reimport (cursor moved into the past) outside the
+            # allowed window still returns OE0559 for non-secret callers.
+            if param == 'last_import_at':
+                patch('rest_api.rest_api_server.handlers.v1.base.BaseAuthHandler.'
+                      'check_cluster_secret', return_value=True).start()
+                code, imports = self.client.report_import_list(
+                    cloud_acc['id'], show_completed=False)
+                self.assertEqual(code, 200)
+                for report_import in imports['report_imports']:
+                    self.client.report_import_update(
+                        report_import['id'], {'state': 'completed'})
+                patch('rest_api.rest_api_server.handlers.v1.base.BaseAuthHandler.'
+                      'check_cluster_secret', return_value=False).start()
+            code, resp = self.client.cloud_account_update(
+                cloud_acc['id'], {param: 1})
+            self.assertEqual(code, 400)
+            self.assertEqual(resp['error']['error_code'], 'OE0559')
 
         patch('rest_api.rest_api_server.handlers.v1.base.BaseAuthHandler.'
               'check_cluster_secret', return_value=True).start()
@@ -1438,8 +1518,23 @@ class TestCloudAccountApi(TestApiBase):
         self.assertEqual(code, 200)
         p_publish_activities2.assert_not_called()
 
+        # Rewinding last_import_at while an import is still queued/running is
+        # blocked (OE0574). Finish outstanding imports first, then exercise
+        # the silent import-only patch path.
+        code, imports = self.client.report_import_list(
+            cloud_acc['id'], show_completed=False)
+        self.assertEqual(code, 200)
+        for report_import in imports['report_imports']:
+            self.client.report_import_update(
+                report_import['id'], {'state': 'completed'})
+        # Completing imports publishes report_import events — ignore those.
+        p_publish_activities2.reset_mock()
+
+        # Use an in-window past cursor so the update is a real reimport, not
+        # rejected by OE0559, and still does not publish cloud_account_updated.
+        reimport_at = now - 45 * 24 * 60 * 60
         code, cloud_acc = self.client.cloud_account_update(cloud_acc['id'], {
-            'last_import_modified_at': 1, 'last_import_at': 1})
+            'last_import_modified_at': 1, 'last_import_at': reimport_at})
         self.assertEqual(code, 200)
         p_publish_activities2.assert_not_called()
 
@@ -1977,6 +2072,24 @@ class TestCloudAccountApi(TestApiBase):
         self.assertEqual(code, 404)
         self.assertEqual(resp['error']['error_code'], 'OE0002')
 
+    def test_delete_cloud_acc_keeps_multi_account_constraint(self):
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_aws_cloud_acc)
+        self.assertEqual(code, 201)
+        azure = deepcopy(self.valid_azure_cloud_acc)
+        code, cloud_acc2 = self.create_cloud_account(self.org_id, azure)
+        self.assertEqual(code, 201)
+        constr = self.create_org_constraint(
+            self.org_id, self.org['pool_id'],
+            filters={'cloud_account_id': [cloud_acc['id'], cloud_acc2['id']]})
+
+        code, _ = self.client.cloud_account_delete(cloud_acc['id'])
+        self.assertEqual(code, 204)
+        code, resp = self.client.organization_constraint_get(constr['id'])
+        self.assertEqual(code, 200)
+        ca_ids = [x['id'] for x in resp['filters']['cloud_account']]
+        self.assertEqual(ca_ids, [cloud_acc2['id']])
+
     def test_delete_org_limit_hit_on_cloud_acc_deleting(self):
         code, cloud_acc = self.create_cloud_account(self.org_id,
                                                     self.valid_aws_cloud_acc)
@@ -2046,6 +2159,8 @@ class TestCloudAccountApi(TestApiBase):
         config = self.valid_gcp_cloud_acc['config'].copy()
         config.pop('credentials')
         self.assertDictEqual(config, cloud_acc['config'])
+        ca_obj = self.get_cloud_account_object(cloud_acc['id'])
+        self.assertEqual(ca_obj.import_period, 6)
 
     def test_create_gcp_non_standard_billing(self):
         ca_config = copy.deepcopy(self.valid_gcp_cloud_acc)
@@ -2242,12 +2357,16 @@ class TestCloudAccountApi(TestApiBase):
         for c in resp['cloud_accounts']:
             if c['id'] != parent_ca['id']:
                 child_ca_id = c['id']
+                self.assertIsNotNone(
+                    c['config'].get('last_children_sync_at'))
                 self.assertEqual(c['config'], {
                     'secret': 'secret',
                     'client_id': 'id',
                     'tenant': 't',
                     'subscription_id': 'subscription_1',
-                    'expense_import_scheme': 'raw_usage'
+                    'expense_import_scheme': 'raw_usage',
+                    'last_children_sync_at': c['config'][
+                        'last_children_sync_at'],
                 })
                 self.assertEqual(c['type'], 'azure_cnr')
                 ca_obj = self.get_cloud_account_object(child_ca_id)
@@ -2330,12 +2449,16 @@ class TestCloudAccountApi(TestApiBase):
             if acc['id'] not in [parent_ca['id'], test_cloud_acc['id']]:
                 self.assertEqual(acc['type'], 'azure_cnr')
                 self.assertEqual(acc['name'], conflict_name + f' ({tenant})')
+                self.assertIsNotNone(
+                    acc['config'].get('last_children_sync_at'))
                 self.assertEqual(acc['config'], {
                     'secret': 'secret',
                     'client_id': 'id',
                     'tenant': tenant,
                     'subscription_id': 'subscription_1',
-                    'expense_import_scheme': 'raw_usage'
+                    'expense_import_scheme': 'raw_usage',
+                    'last_children_sync_at': acc['config'][
+                        'last_children_sync_at'],
                 })
 
     def test_create_nebius_cloud_acc(self):
@@ -2479,7 +2602,21 @@ class TestCloudAccountApi(TestApiBase):
         self.assertEqual(cloud_acc['config']['account'], 'PUBLICIS-PROD')
         self.assertEqual(cloud_acc['config']['billing_source'], 'account_usage')
         self.assertNotIn('private_key', cloud_acc['config'])
-        self.assertIn('cost_model', cloud_acc['config'])
+        # Snowflake rates come from RATE_SHEET_DAILY — no cost_model on create.
+        self.assertNotIn('cost_model', cloud_acc['config'])
+
+    def test_snowflake_stores_detected_region(self):
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'HW44440',
+                'warnings': [],
+                'region': 'AWS_US_EAST_1',
+            }).start()
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_snowflake_cloud_acc)
+        self.assertEqual(code, 201)
+        self.assertEqual(cloud_acc['config']['region'], 'AWS_US_EAST_1')
 
     def test_snowflake_verify_config(self):
         credentials = self.valid_snowflake_cloud_acc.copy()
@@ -2504,14 +2641,36 @@ class TestCloudAccountApi(TestApiBase):
             }).start()
         body = deepcopy(self.valid_snowflake_cloud_acc)
         body['name'] = 'snowflake org'
+        body['type'] = 'snowflake'
         body['config']['billing_source'] = 'organization_usage'
         body['config']['account'] = 'PUBLICIS-ADMIN'
         code, cloud_acc = self.create_cloud_account(self.org_id, body)
         self.assertEqual(code, 201)
         self.assertEqual(
             cloud_acc['config']['billing_source'], 'organization_usage')
+        # Internal mapping: organization_usage ⇒ snowflake_tenant in DB/API.
+        self.assertEqual(cloud_acc['type'], 'snowflake_tenant')
+        self.assertTrue(cloud_acc.get('auto_import'))
 
-    def test_snowflake_patch_cost_model(self):
+    def test_snowflake_tenant_type_with_account_usage_forced_org(self):
+        patch(
+            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
+            return_value={
+                'account_id': 'CP81654', 'warnings': []
+            }).start()
+        body = deepcopy(self.valid_snowflake_cloud_acc)
+        body['name'] = 'snowflake tenant explicit'
+        body['type'] = 'snowflake_tenant'
+        body['config']['billing_source'] = 'account_usage'
+        body['config']['account'] = 'PUBLICIS-ADMIN'
+        code, cloud_acc = self.create_cloud_account(self.org_id, body)
+        self.assertEqual(code, 201)
+        self.assertEqual(cloud_acc['type'], 'snowflake_tenant')
+        self.assertEqual(
+            cloud_acc['config']['billing_source'], 'organization_usage')
+
+    def test_snowflake_ignores_cost_model_patch(self):
+        """Snowflake rates come from RATE_SHEET_DAILY — cost_model is ignored."""
         patch(
             'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
             return_value={
@@ -2520,35 +2679,7 @@ class TestCloudAccountApi(TestApiBase):
         code, cloud_acc = self.create_cloud_account(
             self.org_id, self.valid_snowflake_cloud_acc)
         self.assertEqual(code, 201)
-        config = {
-            'account': 'PUBLICIS-PROD',
-            'user': 'svc_optscale',
-            'role': 'ACCOUNTADMIN',
-            'warehouse': 'COMPUTE_WH',
-            'billing_source': 'account_usage',
-            'cost_model': {
-                'credit_price': 3.5,
-                'storage_price_per_tb_month': 23.0,
-            },
-        }
-        code, ret = self.client.cloud_account_update(
-            cloud_acc['id'], {'config': config})
-        self.assertEqual(code, 200)
-        self.assertEqual(ret['config']['cost_model']['credit_price'], 3.5)
-        code, cost_model = self.client.sku_cost_model_get(cloud_acc['id'])
-        self.assertEqual(code, 200)
-        self.assertEqual(cost_model['value']['credit_price'], 3.5)
-
-    def test_snowflake_patch_cost_model_only(self):
-        """UI pricing form sends only cost_model; must not re-validate creds."""
-        patch(
-            'tools.cloud_adapter.clouds.snowflake.Snowflake.validate_credentials',
-            return_value={
-                'account_id': 'HW44440', 'warnings': []
-            }).start()
-        code, cloud_acc = self.create_cloud_account(
-            self.org_id, self.valid_snowflake_cloud_acc)
-        self.assertEqual(code, 201)
+        self.assertIsNone(cloud_acc.get('config', {}).get('cost_model'))
         params = {
             'config': {
                 'cost_model': {
@@ -2559,17 +2690,11 @@ class TestCloudAccountApi(TestApiBase):
         }
         code, ret = self.client.cloud_account_update(cloud_acc['id'], params)
         self.assertEqual(code, 200)
-        self.assertEqual(ret['config']['cost_model']['credit_price'], 4.25)
-        self.assertEqual(
-            ret['config']['cost_model']['storage_price_per_tb_month'], 40.0)
-        # Billing fields unchanged; private_key still omitted when secure
+        self.assertFalse(ret.get('config', {}).get('cost_model'))
         self.assertEqual(ret['config']['account'],
                          self.valid_snowflake_cloud_acc['config']['account'])
         self.assertEqual(ret['config']['warehouse'],
                          self.valid_snowflake_cloud_acc['config']['warehouse'])
-        code, cost_model = self.client.sku_cost_model_get(cloud_acc['id'])
-        self.assertEqual(code, 200)
-        self.assertEqual(cost_model['value']['credit_price'], 4.25)
 
     def test_adapter_implemented(self):
         for t in list(CloudTypes):
@@ -2676,3 +2801,120 @@ class TestCloudAccountApi(TestApiBase):
             {'last_import_at': now - 7 * 24 * 3600})
         self.assertEqual(code, 409)
         self.assertEqual(resp['error']['error_code'], 'OE0574')
+
+    def test_billing_reimport_clears_stale_attempt_error(self):
+        """Rewinding last_import_at must clear last_import_attempt_error.
+
+        Otherwise UI shows Billing import failed while a full reimport runs
+        (attempt_at stays in the future relative to the rewound cursor).
+        """
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_aws_cloud_acc)
+        self.assertEqual(code, 201)
+        code, imports = self.client.report_import_list(
+            cloud_acc['id'], show_completed=False)
+        self.assertEqual(code, 200)
+        for report_import in imports['report_imports']:
+            self.client.report_import_update(
+                report_import['id'], {'state': 'completed'})
+
+        now = opttime.utcnow_timestamp()
+        patch('rest_api.rest_api_server.handlers.v1.base.BaseAuthHandler.'
+              'check_cluster_secret', return_value=True).start()
+        code, cloud_acc = self.client.cloud_account_update(
+            cloud_acc['id'], {
+                'last_import_at': now,
+                'last_import_attempt_at': now,
+                'last_import_attempt_error': 'stale BQ invalidQuery',
+            })
+        self.assertEqual(code, 200)
+        self.assertEqual(
+            cloud_acc['last_import_attempt_error'], 'stale BQ invalidQuery')
+
+        # Finish import scheduled by the last_import_at update above.
+        code, imports = self.client.report_import_list(
+            cloud_acc['id'], show_completed=False)
+        self.assertEqual(code, 200)
+        for report_import in imports['report_imports']:
+            if report_import['state'] in ('scheduled', 'in_progress'):
+                self.client.report_import_update(
+                    report_import['id'], {'state': 'completed'})
+
+        code, cloud_acc = self.client.cloud_account_update(
+            cloud_acc['id'],
+            {'last_import_at': now - 7 * 24 * 3600})
+        self.assertEqual(code, 200)
+        self.assertIsNone(cloud_acc.get('last_import_attempt_error'))
+
+    def _insert_completed_import(self, cloud_acc_id, details, created_at=None):
+        db = DBFactory(DBType.Test, None).db
+        session = BaseDB.session(db.engine)()
+        row = ReportImport(
+            created_at=created_at if created_at is not None
+            else opttime.utcnow_timestamp(),
+            deleted_at=0,
+            cloud_account_id=cloud_acc_id,
+            state=ImportStates.COMPLETED,
+            details=details,
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+
+    def test_stage_target_cost_mismatch_helper(self):
+        self.assertFalse(stage_target_cost_mismatch(None))
+        self.assertFalse(stage_target_cost_mismatch({
+            'reconciliation': [
+                {'resource_type': 'GKE', 'local_sum': 10.0,
+                 'target_sum': 11.0},
+            ]
+        }))
+        self.assertTrue(stage_target_cost_mismatch({
+            'reconciliation': [
+                {'resource_type': 'GKE', 'local_sum': 10.0,
+                 'target_sum': 11.01},
+            ]
+        }))
+        # Type split (Instance vs Compute Engine) must not flag when totals match.
+        self.assertFalse(stage_target_cost_mismatch({
+            'reconciliation': [
+                {'resource_type': 'Instance', 'local_sum': 10.0,
+                 'target_sum': 12.0},
+                {'resource_type': 'Compute Engine', 'local_sum': 2.0,
+                 'target_sum': 0.0},
+            ]
+        }))
+        self.assertTrue(stage_target_cost_mismatch({
+            'local_sum': 1.0, 'target_sum': 7.0
+        }))
+
+    def test_list_details_cost_mismatch_from_last_completed_import(self):
+        code, cloud_acc = self.create_cloud_account(
+            self.org_id, self.valid_aws_cloud_acc)
+        self.assertEqual(code, 201)
+        now = opttime.utcnow_timestamp()
+        self._insert_completed_import(cloud_acc['id'], {
+            'reconciliation': [
+                {'resource_type': 'GKE', 'local_sum': 10.0,
+                 'target_sum': 10.0},
+            ]
+        }, created_at=now - 10)
+        self._insert_completed_import(cloud_acc['id'], {
+            'reconciliation': [
+                {'resource_type': 'GKE', 'local_sum': 10.0,
+                 'target_sum': 16.0},
+            ]
+        }, created_at=now)
+        code, cloud_acc_list = self.client.cloud_account_list(
+            self.org_id, details=True)
+        self.assertEqual(code, 200)
+        row = [c for c in cloud_acc_list['cloud_accounts']
+               if c['id'] == cloud_acc['id']][0]
+        self.assertEqual(row['details']['duplicate_groups'], 0)
+        self.assertTrue(row['details']['cost_mismatch'])
+
+        code, got = self.client.cloud_account_get(
+            cloud_acc['id'], details=True)
+        self.assertEqual(code, 200)
+        self.assertTrue(got['details']['cost_mismatch'])
+        self.assertEqual(got['details']['duplicate_groups'], 0)

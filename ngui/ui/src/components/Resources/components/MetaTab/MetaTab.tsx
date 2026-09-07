@@ -10,6 +10,7 @@ import {
   WITH_LEGEND_QUERY_PARAMETER_NAME,
 } from "urls";
 import { isEmptyArray } from "utils/arrays";
+import { isIncompleteBillingPeriod, toExpensePeriodApiParams } from "utils/costPeriod";
 import { SPACING_1 } from "utils/layouts";
 import BreakdownChart from "./BreakdownChart";
 import { BREAKDOWN_TYPE, BREAKDOWN_FIELD_NAME } from "./constants";
@@ -52,13 +53,18 @@ const MetaTab = ({ dateRange, requestParams, metaNames = [] }: MetaProps) => {
       organizationId,
       params: {
         ...filters,
-        meta: applyFilterByCategory ? Array.from(new Set([breakdownBy, ...filters.meta])) : filters.meta,
-        start_date: dateRange.startDate,
-        end_date: dateRange.endDate,
+        meta: applyFilterByCategory
+          ? Array.from(new Set([breakdownBy, ...(filters.meta || [])]))
+          : filters.meta,
+        ...toExpensePeriodApiParams({
+          startDate: dateRange.startDate,
+          endDate: dateRange.endDate,
+          invoiceMonths: requestParams.invoiceMonths,
+        }),
         breakdown_by: breakdownBy,
       },
     },
-    skip: isEmptyArray(metaNames),
+    skip: isEmptyArray(metaNames) || isIncompleteBillingPeriod(requestParams),
   });
 
   const field =
@@ -109,22 +115,29 @@ const MetaTab = ({ dateRange, requestParams, metaNames = [] }: MetaProps) => {
 const AvailableMetaFilters = ({ requestParams }: AvailableMetaFiltersProps) => {
   const { organizationId } = useOrganizationInfo();
 
-  const { startDate: startDateString, endDate: endDateString, ...restRequestParams } = requestParams;
+  const { startDate: startDateString, endDate: endDateString, invoiceMonths, ...restRequestParams } = requestParams;
 
   const dateRange = {
     startDate: Number(startDateString),
     endDate: Number(endDateString),
   };
 
+  const periodParams = toExpensePeriodApiParams({
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    invoiceMonths,
+  });
+
   const { data: availableFiltersData, loading: isAvailableFiltersLoading } = useAvailableFiltersQuery({
     variables: {
       organizationId,
       params: {
         ...mapAvailableFilterKeys(restRequestParams),
-        start_date: dateRange.startDate,
-        end_date: dateRange.endDate,
+        ...periodParams,
+        facets: "meta",
       },
     },
+    skip: isIncompleteBillingPeriod({ ...requestParams, invoiceMonths, periodType: requestParams.periodType }),
   });
 
   const metaNames =
@@ -134,7 +147,13 @@ const AvailableMetaFilters = ({ requestParams }: AvailableMetaFiltersProps) => {
     return <TabContentLoader />;
   }
 
-  return <MetaTab dateRange={dateRange} requestParams={restRequestParams} metaNames={metaNames} />;
+  return (
+    <MetaTab
+      dateRange={dateRange}
+      requestParams={{ ...restRequestParams, invoiceMonths, periodType: requestParams.periodType }}
+      metaNames={metaNames}
+    />
+  );
 };
 
 export default AvailableMetaFilters;

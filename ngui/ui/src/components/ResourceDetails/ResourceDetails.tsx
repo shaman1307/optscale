@@ -339,7 +339,7 @@ const getColumnSize = (shouldRenderTagsTable, shouldRenderMetadata) => {
 const ResourceDetails = (props) => {
   const metadataTags = MetadataNodes(props).getTags();
   const resourceProperties = getResourceProperties(props);
-  const { tags } = props;
+  const tags = props.tags && typeof props.tags === "object" && !Array.isArray(props.tags) ? props.tags : {};
 
   const shouldRenderTagsTable = !isEmptyObject(tags) && Object.values(tags).filter(Boolean);
   const shouldRenderMetadata = !isEmptyObject(metadataTags) && Object.values(metadataTags).filter(Boolean);

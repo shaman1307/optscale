@@ -65,6 +65,7 @@ export const EXPENSES = concatenateUrl([EXPENSES_BASE]);
 export const EXPENSES_MAP = concatenateUrl([EXPENSES_MAP_BASE]);
 
 export const EXPENSES_BY_CLOUD = concatenateUrl([EXPENSES_BASE, `?filterBy=${EXPENSES_FILTERBY_TYPES.CLOUD}`], "/", "");
+export const EXPENSES_BY_VENDOR = concatenateUrl([EXPENSES_BASE, `?filterBy=${EXPENSES_FILTERBY_TYPES.VENDOR}`], "/", "");
 export const CLOUD_EXPENSES = concatenateUrl([CLOUD_EXPENSES_BASE, CLOUD_ACCOUNT_IDENTIFIER]);
 export const getCloudExpensesUrl = (cloudAccountId) => CLOUD_EXPENSES.replace(CLOUD_ACCOUNT_IDENTIFIER, cloudAccountId);
 
@@ -137,6 +138,8 @@ export const TAGGING_POLICY = concatenateUrl([TAGGING_POLICIES_BASE, TAGGING_POL
 export const getTaggingPolicyUrl = (policyId) => TAGGING_POLICY.replace(TAGGING_POLICY_IDENTIFIER, policyId);
 
 export const TAGGING_POLICY_CREATE = concatenateUrl([TAGGING_POLICIES_BASE, CREATE]);
+export const TAGGING_POLICY_EDIT = concatenateUrl([TAGGING_POLICIES_BASE, TAGGING_POLICY_IDENTIFIER, EDIT]);
+export const getEditTaggingPolicyUrl = (policyId) => TAGGING_POLICY_EDIT.replace(TAGGING_POLICY_IDENTIFIER, policyId);
 
 // Organizations overview
 const ORGANIZATIONS_OVERVIEW_BASE = "organizations";
@@ -491,6 +494,31 @@ const CLUSTER_TYPE_BASE = "cluster-type";
 
 export const CLUSTER_TYPES = concatenateUrl([CLUSTER_TYPES_BASE]);
 export const CLUSTER_TYPE_CREATE = concatenateUrl([CLUSTER_TYPE_BASE, CREATE]);
+
+// Virtual tags
+const VIRTUAL_TAGS_BASE = "virtual-tags";
+const VIRTUAL_TAG_BASE = "virtual-tag";
+const VIRTUAL_TAG_IDENTIFIER = ":virtualTagId";
+const VIRTUAL_TAG_RULE_IDENTIFIER = ":virtualTagRuleId";
+
+export const VIRTUAL_TAGS = concatenateUrl([VIRTUAL_TAGS_BASE]);
+export const VIRTUAL_TAG_CREATE = concatenateUrl([VIRTUAL_TAG_BASE, CREATE]);
+export const VIRTUAL_TAG = concatenateUrl([VIRTUAL_TAGS_BASE, VIRTUAL_TAG_IDENTIFIER]);
+export const getVirtualTagUrl = (virtualTagId) => VIRTUAL_TAG.replace(VIRTUAL_TAG_IDENTIFIER, virtualTagId);
+export const VIRTUAL_TAG_EDIT = concatenateUrl([VIRTUAL_TAGS_BASE, VIRTUAL_TAG_IDENTIFIER, EDIT]);
+export const getEditVirtualTagUrl = (virtualTagId) => VIRTUAL_TAG_EDIT.replace(VIRTUAL_TAG_IDENTIFIER, virtualTagId);
+export const VIRTUAL_TAG_RULE_CREATE = concatenateUrl([VIRTUAL_TAGS_BASE, VIRTUAL_TAG_IDENTIFIER, "rules", CREATE]);
+export const getCreateVirtualTagRuleUrl = (virtualTagId) =>
+  VIRTUAL_TAG_RULE_CREATE.replace(VIRTUAL_TAG_IDENTIFIER, virtualTagId);
+export const VIRTUAL_TAG_RULE_EDIT = concatenateUrl([
+  VIRTUAL_TAGS_BASE,
+  VIRTUAL_TAG_IDENTIFIER,
+  "rules",
+  VIRTUAL_TAG_RULE_IDENTIFIER,
+  EDIT,
+]);
+export const getEditVirtualTagRuleUrl = (virtualTagId, ruleId) =>
+  VIRTUAL_TAG_RULE_EDIT.replace(VIRTUAL_TAG_IDENTIFIER, virtualTagId).replace(VIRTUAL_TAG_RULE_IDENTIFIER, ruleId);
 
 // Environments
 const ENVIRONMENTS_BASE = "environments";

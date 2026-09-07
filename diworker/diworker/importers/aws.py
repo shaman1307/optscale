@@ -11,7 +11,12 @@ from collections import defaultdict, OrderedDict
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 
-from diworker.diworker.importers.base import CSVBaseReportImporter
+from diworker.diworker.importers.base import (
+    CSVBaseReportImporter,
+    IMPORT_PHASE_MONGO_WRITE,
+    IMPORT_PHASE_REPORT_PARSE,
+    IMPORT_PHASE_S3_DOWNLOAD,
+)
 import tools.optscale_time as opttime
 import pyarrow.parquet as pq
 
@@ -238,6 +243,10 @@ class AWSReportImporter(CSVBaseReportImporter):
         account_id_ca_id_map[self.cloud_acc['account_id']] = self.cloud_acc_id
         return account_id_ca_id_map
 
+    def prepare(self):
+        self.log_import_phase(IMPORT_PHASE_S3_DOWNLOAD)
+        super().prepare()
+
     def load_raw_data(self):
         account_id_ca_id_map = self.get_linked_account_map()
         report_files = []
@@ -250,6 +259,7 @@ class AWSReportImporter(CSVBaseReportImporter):
     def load_report(self, report_path, account_id_ca_id_map):
         skipped_accounts = set()
         billing_period = None
+        self.log_import_phase(IMPORT_PHASE_REPORT_PARSE)
         LOG.info('loading report %s', report_path)
 
         try:
@@ -273,6 +283,7 @@ class AWSReportImporter(CSVBaseReportImporter):
                         skipped_accounts)
 
     def update_raw_records(self, chunk):
+        self.log_import_phase(IMPORT_PHASE_MONGO_WRITE)
         for row in chunk:
             # TODO: OS-5444
             # pymongo InsertOne fails on '.' in key, while UpdateOne splits

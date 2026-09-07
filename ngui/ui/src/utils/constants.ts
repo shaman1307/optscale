@@ -54,6 +54,7 @@ export const AZURE_CNR = "azure_cnr";
 export const AZURE_TENANT = "azure_tenant";
 export const DATABRICKS = "databricks";
 export const SNOWFLAKE = "snowflake";
+export const SNOWFLAKE_TENANT = "snowflake_tenant";
 export const GCP_CNR = "gcp_cnr";
 export const GCP_TENANT = "gcp_tenant";
 export const ALIBABA_CNR = "alibaba_cnr";
@@ -96,6 +97,7 @@ export const CLOUD_ACCOUNT_TYPE = Object.freeze({
   [AZURE_TENANT]: "azureTenant",
   [DATABRICKS]: "databricks",
   [SNOWFLAKE]: "snowflake",
+  [SNOWFLAKE_TENANT]: "snowflake",
   [ALIBABA_CNR]: "alibabaCloud",
   [GCP_CNR]: "gcpProject",
   [GCP_TENANT]: "gcpTenant",
@@ -124,6 +126,7 @@ export const FILTER_BY = "filterBy";
 
 export const EXPENSES_FILTERBY_TYPES = Object.freeze({
   CLOUD: "cloud",
+  VENDOR: "vendor",
   POOL: "pool",
   EMPLOYEE: "employee",
   SERVICE: "service",
@@ -240,6 +243,9 @@ export const START_DATE_FILTER = "startDate";
 export const END_DATE_BE_FILTER = "end_date";
 export const END_DATE_FILTER = "endDate";
 
+export const INVOICE_MONTHS_FILTER = "invoiceMonths";
+export const INVOICE_MONTHS_BE_FILTER = "invoice_months";
+
 export const CLOUD_ACCOUNT_BE_FILTER = "cloud_account";
 export const CLOUD_ACCOUNT_ID_FILTER = "cloudAccountId";
 
@@ -257,6 +263,8 @@ export const OWNER_ID_FILTER = "ownerId";
 
 export const REGION_BE_FILTER = "region";
 export const REGION_FILTER = "region";
+
+export const VENDOR_FILTER = "vendor";
 
 export const SERVICE_NAME_BE_FILTER = "service_name";
 export const SERVICE_NAME_FILTER = "serviceName";
@@ -291,6 +299,8 @@ export const K8S_NAMESPACE_FILTER = "k8sNamespace";
 export const K8S_SERVICE_BE_FILTER = "k8s_service";
 export const K8S_SERVICE_FILTER = "k8sService";
 
+export const K8S_RESOURCE_FILTER_IDS = [K8S_NODE_FILTER, K8S_SERVICE_FILTER, K8S_NAMESPACE_FILTER] as const;
+
 export const ACCOUNT_LOCATOR_BE_FILTER = "account_locator";
 export const ACCOUNT_LOCATOR_FILTER = "accountLocator";
 
@@ -300,7 +310,11 @@ export const TAG_FILTER = "tag";
 export const WITHOUT_TAG_BE_FILTER = "without_tag";
 export const WITHOUT_TAG_FILTER = "withoutTag";
 
+export const NO_TAG_FILTER = "noTag";
+
 export const META_FILTER = "meta";
+
+export const VIRTUAL_TAG_FILTER = "virtualTag";
 
 export const ANY_NETWORK_TRAFFIC_LOCATION = "ANY";
 
@@ -542,6 +556,7 @@ export const CLEAN_EXPENSES_GROUP_TYPES = Object.freeze({
   POOL: "pool",
   OWNER: "owner",
   TAG: "tag",
+  VIRTUAL_TAG: "virtualTag",
 });
 
 export const CLEAN_EXPENSES_GROUP_TYPES_LIST = Object.values(CLEAN_EXPENSES_GROUP_TYPES);
@@ -642,6 +657,7 @@ export const DEFAULT_CHART_BORDER_WIDTH = 0;
 export const RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY = Object.freeze({
   EMPLOYEE_ID: "employee_id",
   POOL_ID: "pool_id",
+  SUBPOOL: "subpool",
   CLOUD_ACCOUNT_ID: "cloud_account_id",
   SERVICE_NAME: "service_name",
   REGION: "region",
@@ -1040,6 +1056,7 @@ export const DATASET_PATH_LENGTH_LIMIT = 70;
 export const AUTH_PROVIDERS = Object.freeze({
   GOOGLE: "google",
   MICROSOFT: "microsoft",
+  OIDC: "oidc",
 });
 
 export const POWER_SCHEDULE_ACTIONS = Object.freeze({

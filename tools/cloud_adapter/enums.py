@@ -13,3 +13,4 @@ class CloudTypes(Enum):
     ENVIRONMENT = 'environment'
     DATABRICKS = 'databricks'
     SNOWFLAKE = 'snowflake'
+    SNOWFLAKE_TENANT = 'snowflake_tenant'

@@ -5,10 +5,12 @@ import { GET_RESOURCE_COUNT_BREAKDOWN } from "api/restapi/actionTypes";
 import { useApiData } from "hooks/useApiData";
 import { useApiState } from "hooks/useApiState";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
-import { mapCleanExpensesFilterParamsToApiParams } from "./CleanExpensesService";
+import { toDateRangeApiParams } from "utils/costPeriod";
+import { mapAvailableFilterKeys } from "./AvailableFiltersService";
 
 const getParams = (breakdownBy, filterParams) => ({
-  ...mapCleanExpensesFilterParamsToApiParams(filterParams),
+  ...toDateRangeApiParams(filterParams),
+  ...mapAvailableFilterKeys(filterParams),
   breakdown_by: breakdownBy,
 });
 

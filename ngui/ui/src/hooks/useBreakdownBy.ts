@@ -2,11 +2,13 @@ import { useEffect, useMemo } from "react";
 import { intl } from "translations/react-intl-config";
 import { RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY, RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY_VALUES } from "utils/constants";
 import { updateSearchParams } from "utils/network";
+import { getVirtualTagKeyFromFilterBy, isVirtualTagBreakdown } from "utils/virtualTagBreakdown";
+import { useHasKubernetesDataSource } from "./useHasKubernetesDataSource";
 import { useReactiveSearchParams } from "./useReactiveSearchParams";
 
-const getBreakdownDefinition = (value: string, messageId: string) => ({
+const getBreakdownDefinition = (value: string, messageId: string, name?: string) => ({
   value,
-  name: intl.formatMessage({ id: messageId }),
+  name: name ?? intl.formatMessage({ id: messageId }),
 });
 
 const serviceNameBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.SERVICE_NAME, "service");
@@ -21,16 +23,15 @@ const ownerBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN
 
 const poolBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.POOL_ID, "pool");
 
+const subpoolBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.SUBPOOL, "subpool");
+
 const k8sNodeBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_NODE, "k8sNode");
 
 const k8sNamespaceBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_NAMESPACE, "k8sNamespace");
 
 const k8sServiceBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_SERVICE, "k8sService");
 
-const accountLocatorBreakdown = getBreakdownDefinition(
-  RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.ACCOUNT_LOCATOR,
-  "accountLocator"
-);
+const accountLocatorBreakdown = getBreakdownDefinition(RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.ACCOUNT_LOCATOR, "sfAccount");
 
 export const breakdowns = Object.freeze([
   serviceNameBreakdown,
@@ -39,28 +40,64 @@ export const breakdowns = Object.freeze([
   dataSourceBreakdown,
   ownerBreakdown,
   poolBreakdown,
+  subpoolBreakdown,
   accountLocatorBreakdown,
   k8sNodeBreakdown,
   k8sNamespaceBreakdown,
   k8sServiceBreakdown,
 ]);
 
-export const useBreakdownBy = ({ queryParamName }: { queryParamName: string }) => {
+const K8S_BREAKDOWN_VALUES = new Set([
+  RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_NODE,
+  RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_NAMESPACE,
+  RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY.K8S_SERVICE,
+]);
+
+export const getVisibleBreakdowns = (hasKubernetes: boolean) =>
+  hasKubernetes ? breakdowns : breakdowns.filter((breakdown) => !K8S_BREAKDOWN_VALUES.has(breakdown.value));
+
+export const getBreakdownDisplayName = (value?: string) => {
+  const found = breakdowns.find((breakdown) => breakdown.value === value);
+  if (found) {
+    return found.name;
+  }
+  if (isVirtualTagBreakdown(value)) {
+    return getVirtualTagKeyFromFilterBy(value);
+  }
+  return value;
+};
+
+export const useBreakdownBy = ({
+  queryParamName,
+  extraBreakdowns = [],
+}: {
+  queryParamName: string;
+  extraBreakdowns?: { value: string; name: string }[];
+}) => {
+  const hasKubernetes = useHasKubernetesDataSource();
   const searchParams = useReactiveSearchParams(useMemo(() => [queryParamName], [queryParamName]));
 
   const breakdownByQueryParameterValue = searchParams[queryParamName];
 
+  const visibleBreakdowns = useMemo(() => getVisibleBreakdowns(hasKubernetes), [hasKubernetes]);
+  const allBreakdowns = useMemo(() => [...visibleBreakdowns, ...extraBreakdowns], [visibleBreakdowns, extraBreakdowns]);
+
   const breakdownBy = RESOURCES_EXPENSES_DAILY_BREAKDOWN_BY_VALUES.includes(breakdownByQueryParameterValue)
-    ? breakdowns.find(({ value }) => value === breakdownByQueryParameterValue)
-    : serviceNameBreakdown;
+    ? allBreakdowns.find(({ value }) => value === breakdownByQueryParameterValue) ?? serviceNameBreakdown
+    : isVirtualTagBreakdown(breakdownByQueryParameterValue)
+      ? allBreakdowns.find(({ value }) => value === breakdownByQueryParameterValue) || {
+          value: breakdownByQueryParameterValue,
+          name: getVirtualTagKeyFromFilterBy(breakdownByQueryParameterValue),
+        }
+      : serviceNameBreakdown;
 
   useEffect(() => {
-    if (!searchParams[queryParamName]) {
+    if (!searchParams[queryParamName] || (K8S_BREAKDOWN_VALUES.has(searchParams[queryParamName]) && !hasKubernetes)) {
       updateSearchParams({
         [queryParamName]: serviceNameBreakdown.value,
       });
     }
-  }, [queryParamName, searchParams]);
+  }, [hasKubernetes, queryParamName, searchParams]);
 
   const onBreakdownByChange = (newBreakdownByValue: string) => {
     updateSearchParams({

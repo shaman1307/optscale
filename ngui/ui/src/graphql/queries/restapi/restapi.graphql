@@ -38,6 +38,7 @@ fragment GcpDataSourceConfigFragment on GcpDataSource {
     billing_data {
       dataset_name
       table_name
+      resource_table_name
       project_id
     }
     pricing_data {
@@ -53,6 +54,7 @@ fragment GcpTenantDataSourceConfigFragment on GcpTenantDataSource {
     billing_data {
       dataset_name
       table_name
+      resource_table_name
       project_id
     }
     pricing_data {
@@ -93,11 +95,9 @@ fragment SnowflakeDataSourceConfigFragment on SnowflakeDataSource {
     user
     role
     warehouse
+    backup_warehouse
     billing_source
-    cost_model {
-      credit_price
-      storage_price_per_tb_month
-    }
+    region
   }
 }
 
@@ -173,6 +173,8 @@ query DataSources($organizationId: ID!) {
       total_resources
       billing_period_start
       billing_period_end
+      duplicate_groups
+      cost_mismatch
     }
     ...AwsDataSourceConfigFragment
     ...AzureTenantDataSourceConfigFragment
@@ -222,6 +224,8 @@ query DataSource($dataSourceId: ID!, $requestParams: DataSourceRequestParams) {
       total_resources
       billing_period_start
       billing_period_end
+      duplicate_groups
+      cost_mismatch
     }
     ...AwsDataSourceConfigFragment
     ...AzureTenantDataSourceConfigFragment
@@ -246,6 +250,26 @@ query ReportImports($cloudAccountId: ID!, $showCompleted: Boolean) {
     state_reason
     is_recalculation
     details
+  }
+}
+
+query ResourceDuplicates($cloudAccountId: ID!) {
+  resourceDuplicates(cloudAccountId: $cloudAccountId) {
+    cloud_account_id
+    count
+    checked_at
+    duplicate_groups {
+      cloud_account_id
+      cloud_account_name
+      cloud_resource_id
+      count
+      resources {
+        id
+        name
+        resource_type
+        cloud_account_id
+      }
+    }
   }
 }
 

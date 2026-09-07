@@ -66,6 +66,14 @@ spec:
           value: {{ $config.env.google_oauth_client_id }}
         - name: VITE_MICROSOFT_OAUTH_CLIENT_ID
           value: {{ $config.env.microsoft_oauth_client_id }}
+        - name: VITE_OIDC_CLIENT_ID
+          value: {{ $config.env.oidc_client_id }}
+        - name: VITE_OIDC_ISSUER
+          value: {{ $config.env.oidc_issuer }}
+        - name: VITE_OIDC_AUTHORIZATION_ENDPOINT
+          value: {{ $config.env.oidc_authorization_endpoint }}
+        - name: VITE_OIDC_LOGIN_ONLY
+          value: {{ $config.env.oidc_login_only | quote }}
         - name: VITE_GOOGLE_MAP_API_KEY
           value: {{ $config.env.google_map_api_key }}
         - name: VITE_GANALYTICS_ID

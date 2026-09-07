@@ -9,6 +9,7 @@ from rest_api.rest_api_server.controllers.expense import (
     CloudFilteredPoolFormattedExpenseController,
     PoolFilteredPoolFormattedExpenseController,
     EmployeeFilteredPoolFormattedExpenseController,
+    VendorFilteredPoolFormattedExpenseController,
     PoolFormattedExpenseController, ExpenseController,
     PoolExpensesExportFilteredPoolFormattedExpenseController)
 from rest_api.rest_api_server.exceptions import Err
@@ -727,11 +728,13 @@ class PoolController(BaseController, MongoMixin):
 
         return result
 
-    def get_expenses(self, pool, start_date, end_date, filter_by=None):
+    def get_expenses(self, pool, start_date, end_date, filter_by=None,
+                     invoice_months=None):
         controller_map = {
             'cloud': CloudFilteredPoolFormattedExpenseController,
             'pool': PoolFilteredPoolFormattedExpenseController,
             'employee': EmployeeFilteredPoolFormattedExpenseController,
+            'vendor': VendorFilteredPoolFormattedExpenseController,
             'pool_expenses_export': PoolExpensesExportFilteredPoolFormattedExpenseController,
         }
 
@@ -739,7 +742,8 @@ class PoolController(BaseController, MongoMixin):
             filter_by, PoolFormattedExpenseController
         )(self.session, self._config)
 
-        return controller.get_formatted_expenses(pool, start_date, end_date)
+        return controller.get_formatted_expenses(
+            pool, start_date, end_date, invoice_months=invoice_months)
 
     def get_overview_savings(self, organization_id):
         last_completed = self.session.query(

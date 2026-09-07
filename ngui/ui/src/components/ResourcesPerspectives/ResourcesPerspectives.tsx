@@ -16,7 +16,7 @@ import TextWithDataTestId from "components/TextWithDataTestId";
 import Tooltip from "components/Tooltip";
 import { useOrganizationPerspectives } from "hooks/coreData/useOrganizationPerspectives";
 import { useIsAllowed } from "hooks/useAllowedActions";
-import { breakdowns } from "hooks/useBreakdownBy";
+import { getBreakdownDisplayName } from "hooks/useBreakdownBy";
 import { useOpenSideModal } from "hooks/useOpenSideModal";
 import { getResourcesExpensesUrl } from "urls";
 import { isEmptyArray } from "utils/arrays";
@@ -230,15 +230,7 @@ const ResourcesPerspectives = () => {
             return [];
           });
 
-          const getCategorizeBy = () => {
-            const breakdownDefinition = breakdowns.find((breakdown) => breakdown.value === categorizeBy);
-
-            if (breakdownDefinition) {
-              return breakdownDefinition.name;
-            }
-
-            return intl.formatMessage({ id: categorizeBy });
-          };
+          const getCategorizeBy = () => getBreakdownDisplayName(categorizeBy) || categorizeBy;
 
           return {
             name: perspectiveName,

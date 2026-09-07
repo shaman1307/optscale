@@ -18,9 +18,10 @@ import {
   TAG_IS,
   CLEAN_EXPENSES_TABLE_QUERY_PARAM_PREFIX,
   CLEAN_EXPENSES_GROUP_TYPES_LIST,
+  VIRTUAL_TAG_FILTER,
 } from "utils/constants";
 import { SPACING_2 } from "utils/layouts";
-import { updateSearchParams } from "utils/network";
+import { getSearchParams, updateSearchParams } from "utils/network";
 import { isEmptyObject } from "utils/objects";
 import { getPaginationQueryKey, getSearchQueryKey } from "utils/tables";
 import { TOTAL_EXPENSES, COUNT } from "./constant";
@@ -35,7 +36,49 @@ const EMPTY_GROUP_VALUE = "";
 
 const getUniqueTags = (expenses) => [...new Set(expenses.map((expense) => Object.keys(expense.tags || {})).flat())].sort();
 
+const getUniqueVirtualTagKeys = (expenses) =>
+  [...new Set(expenses.flatMap((expense) => (expense.virtual_tags || []).map((item) => item.key)))].sort();
+
+const selectedVirtualTagFilterValues = (groupBy) => {
+  const raw = getSearchParams()[VIRTUAL_TAG_FILTER];
+  const selected = raw == null || raw === "" ? [] : Array.isArray(raw) ? raw : [raw];
+  return selected
+    .filter((item) => typeof item === "string" && item.startsWith(`${groupBy}:`))
+    .map((item) => item.slice(groupBy.length + 1));
+};
+
+const expandExpensesByVirtualTag = (expenses, groupBy) => {
+  const selectedValues = selectedVirtualTagFilterValues(groupBy);
+  const expanded = [];
+
+  expenses.forEach((expense) => {
+    let allocs = (expense.virtual_tags || []).filter((item) => item.key === groupBy);
+    if (!isEmptyArray(selectedValues)) {
+      allocs = allocs.filter((item) => selectedValues.includes(item.value));
+    }
+    if (isEmptyArray(allocs)) {
+      expanded.push({ ...expense, _vtGroupValue: OTHER_TAG_GROUP_VALUE });
+      return;
+    }
+    const shareSum = allocs.reduce((sum, item) => sum + Number(item.share || 0), 0) || 100;
+    allocs.forEach((alloc) => {
+      expanded.push({
+        ...expense,
+        cost: expense.cost * (Number(alloc.share || 0) / shareSum),
+        _vtGroupValue: alloc.value || EMPTY_GROUP_VALUE,
+      });
+    });
+  });
+
+  return expanded;
+};
+
 const getGroupedExpenses = ({ expenses, groupType, groupBy, sortGroupsBy }) => {
+  const workingExpenses =
+    groupType === CLEAN_EXPENSES_GROUP_TYPES.VIRTUAL_TAG
+      ? expandExpensesByVirtualTag(expenses, groupBy)
+      : expenses;
+
   const groupByIteratee = {
     [CLEAN_EXPENSES_GROUP_TYPES.POOL]: (expense) => expense.pool?.id ?? EMPTY_GROUP_VALUE,
     [CLEAN_EXPENSES_GROUP_TYPES.OWNER]: (expense) => expense.owner?.id ?? EMPTY_GROUP_VALUE,
@@ -48,6 +91,7 @@ const getGroupedExpenses = ({ expenses, groupType, groupBy, sortGroupsBy }) => {
       }
       return tag ?? OTHER_TAG_GROUP_VALUE;
     },
+    [CLEAN_EXPENSES_GROUP_TYPES.VIRTUAL_TAG]: (expense) => expense._vtGroupValue,
   }[groupType];
 
   const sortGroups = (groups) => [
@@ -98,6 +142,8 @@ const getGroupedExpenses = ({ expenses, groupType, groupBy, sortGroupsBy }) => {
       [CLEAN_EXPENSES_GROUP_TYPES.OWNER]: () => expense.owner.name,
       [CLEAN_EXPENSES_GROUP_TYPES.TAG]: () =>
         groupValue === OTHER_TAG_GROUP_VALUE ? intl.formatMessage({ id: groupValue }) : groupValue,
+      [CLEAN_EXPENSES_GROUP_TYPES.VIRTUAL_TAG]: () =>
+        groupValue === OTHER_TAG_GROUP_VALUE ? intl.formatMessage({ id: groupValue }) : groupValue,
     }[groupType];
 
     return groupNameGetter();
@@ -105,7 +151,7 @@ const getGroupedExpenses = ({ expenses, groupType, groupBy, sortGroupsBy }) => {
 
   const getTotalExpenses = (groupData) => groupData.reduce((result, expense) => result + expense.cost || 0, 0);
 
-  const groupedExpenses = Object.entries(createGroupsObjectFromArray(expenses, groupByIteratee)).map(
+  const groupedExpenses = Object.entries(createGroupsObjectFromArray(workingExpenses, groupByIteratee)).map(
     ([groupValue, groupData]) => [
       groupValue,
       {
@@ -144,16 +190,19 @@ const CleanExpensesTableGroup = ({
   const dispatch = useDispatch();
 
   const tags = useMemo(() => getUniqueTags(expenses), [expenses]);
+  const virtualTagKeys = useMemo(() => getUniqueVirtualTagKeys(expenses), [expenses]);
 
   const validateQueryParameters = useCallback(() => {
     const isGroupTypeQueryParameterValid = validateGroupTypeQueryParameter(groupTypeQueryParameter);
     const isGroupByQueryParameterValid =
       groupTypeQueryParameter === CLEAN_EXPENSES_GROUP_TYPES.TAG
         ? validateGroupByQueryParameter(groupByQueryParameter, { tags })
-        : true;
+        : groupTypeQueryParameter === CLEAN_EXPENSES_GROUP_TYPES.VIRTUAL_TAG
+          ? virtualTagKeys.includes(groupByQueryParameter)
+          : true;
 
     return isGroupTypeQueryParameterValid && isGroupByQueryParameterValid;
-  }, [groupByQueryParameter, groupTypeQueryParameter, tags]);
+  }, [groupByQueryParameter, groupTypeQueryParameter, tags, virtualTagKeys]);
 
   const sortGroupsBy = useSelector((state) => state[RESOURCES_SORT_GROUPS_BY]);
   const setSortGroupsBy = (value) => {
@@ -253,6 +302,22 @@ const CleanExpensesTableGroup = ({
                         label: tag,
                         key: tag,
                         dataTestId: `ls_mi_tag_name_${index}`,
+                      })),
+                    },
+                  ]
+                : []),
+              ...(!isEmptyArray(virtualTagKeys)
+                ? [
+                    {
+                      name: CLEAN_EXPENSES_GROUP_TYPES.VIRTUAL_TAG,
+                      type: LINEAR_SELECTOR_ITEMS_TYPES.POPOVER,
+                      dataTestId: "ls_item_virtual_tag",
+                      items: virtualTagKeys.map((key, index) => ({
+                        name: CLEAN_EXPENSES_GROUP_TYPES.VIRTUAL_TAG,
+                        value: key,
+                        label: key,
+                        key,
+                        dataTestId: `ls_mi_virtual_tag_name_${index}`,
                       })),
                     },
                   ]

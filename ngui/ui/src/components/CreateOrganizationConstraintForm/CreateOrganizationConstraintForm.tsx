@@ -1,5 +1,6 @@
-import { Box } from "@mui/material";
+import { useEffect } from "react";
 import { FormProvider, useForm } from "react-hook-form";
+import { Box } from "@mui/material";
 import { TAGS_RELATED_FILTERS } from "components/Filters/constants";
 import FormButtonsWrapper from "components/FormButtonsWrapper";
 import { FILTER_CONFIGS } from "components/Resources/filterConfigs";
@@ -21,32 +22,47 @@ import {
   TYPE_REQUIRED,
 } from "./FormElements";
 
-const CreateOrganizationConstraintForm = ({ onSubmit, types, navigateAway }) => {
-  const methods = useForm({
-    defaultValues: {
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.FILTERS]: Object.fromEntries(
-        Object.values(FILTER_CONFIGS).map((filterConfig) => {
-          const { id, getDefaultValue } = filterConfig;
+const getEmptyDefaultValues = (types) => ({
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.FILTERS]: Object.fromEntries(
+    Object.values(FILTER_CONFIGS).map((filterConfig) => {
+      const { id, getDefaultValue } = filterConfig;
 
-          return [id, getDefaultValue()];
-        })
-      ),
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.EVALUATION_PERIOD]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.NAME]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.THRESHOLD]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TYPE]: types.length === 1 ? types[0] : "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.MAX_VALUE]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.MONTHLY_BUDGET]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TOTAL_BUDGET]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.START_DATE]: +new Date(),
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TAGS_BAR]: TYPE_REQUIRED,
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.REQUIRED_TAG]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.PROHIBITED_TAG]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.CORRELATION_TAG_1]: "",
-      [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.CORRELATION_TAG_2]: "",
-    },
+      return [id, getDefaultValue()];
+    })
+  ),
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.EVALUATION_PERIOD]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.NAME]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.THRESHOLD]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TYPE]: types.length === 1 ? types[0] : "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.MAX_VALUE]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.MONTHLY_BUDGET]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TOTAL_BUDGET]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.START_DATE]: +new Date(),
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TAGS_BAR]: TYPE_REQUIRED,
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.REQUIRED_TAG]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.PROHIBITED_TAG]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.CORRELATION_TAG_1]: "",
+  [CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.CORRELATION_TAG_2]: "",
+});
+
+const CreateOrganizationConstraintForm = ({
+  onSubmit,
+  types,
+  navigateAway,
+  isEdit = false,
+  defaultValues,
+  isLoading = false,
+}) => {
+  const methods = useForm({
+    defaultValues: defaultValues ?? getEmptyDefaultValues(types),
   });
-  const { handleSubmit, watch } = methods;
+  const { handleSubmit, watch, reset } = methods;
+
+  useEffect(() => {
+    if (defaultValues) {
+      reset(defaultValues);
+    }
+  }, [defaultValues, reset]);
 
   const typeSelected = watch(CREATE_ORGANIZATION_CONSTRAINT_FORM_FIELD_NAMES.TYPE);
 
@@ -55,7 +71,7 @@ const CreateOrganizationConstraintForm = ({ onSubmit, types, navigateAway }) => 
       <FormProvider {...methods}>
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <NameInput />
-          {types.length > 1 && <TypeSelector types={types} />}
+          {!isEdit && types.length > 1 && <TypeSelector types={types} />}
           {ANOMALY_TYPES[typeSelected] && (
             <>
               <EvaluationPeriodInput />
@@ -69,7 +85,7 @@ const CreateOrganizationConstraintForm = ({ onSubmit, types, navigateAway }) => 
           {typeSelected === TAGGING_POLICY && <TagsInputs />}
           <Filters exceptions={typeSelected === TAGGING_POLICY ? TAGS_RELATED_FILTERS : undefined} />
           <FormButtonsWrapper>
-            <SubmitButton />
+            <SubmitButton isEdit={isEdit} isSubmitLoading={isLoading} />
             <CancelButton navigateAway={navigateAway} />
           </FormButtonsWrapper>
         </form>

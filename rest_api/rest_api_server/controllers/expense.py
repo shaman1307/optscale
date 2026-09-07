@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from calendar import monthrange
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from tools.optscale_exceptions.common_exc import (
@@ -13,7 +14,10 @@ from rest_api.rest_api_server.models.models import (Organization, Pool,
 from sqlalchemy import and_
 
 from rest_api.rest_api_server.utils import (
-    get_nil_uuid, encode_string, encoded_tags, timestamp_to_day_start)
+    get_nil_uuid, encode_string, encoded_tags, timestamp_to_day_start,
+    build_virtual_tag_mongo_filter, load_virtual_tag_cost_shares,
+    merge_virtual_tags_for_quarters, quarters_for_invoice_months,
+    current_quarter)
 from rest_api.rest_api_server.controllers.base import (
     BaseController, BaseHierarchicalController, MongoMixin, ClickHouseMixin,
     ResourceFormatMixin)
@@ -26,6 +30,47 @@ from tools.optscale_time import utcfromtimestamp
 LOG = logging.getLogger(__name__)
 NOT_SET_NAME = '(not set)'
 DAY_IN_SECONDS = 86400
+INVOICE_MONTH_RE = re.compile(r'^\d{6}$')
+# Fan-out Mongo finds for Cost Explorer / pool expenses on large orgs
+# (Profitero: ~200 cloud accounts, ~1.8M resources in the date window).
+_MONGO_FIND_PARALLEL_THRESHOLD = 16
+_MONGO_FIND_CHUNK_SIZE = 32
+_MONGO_FIND_WORKERS = 8
+
+
+def normalize_invoice_months(raw):
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    months = []
+    seen = set()
+    for value in raw:
+        if value is None or value == '':
+            continue
+        value = str(value)
+        if not INVOICE_MONTH_RE.match(value):
+            raise WrongArgumentsException(Err.OE0218, ['invoice_months', value])
+        if value not in seen:
+            seen.add(value)
+            months.append(value)
+    return months or None
+
+
+def clickhouse_time_filter(invoice_months=None, start_date=None, end_date=None,
+                           date_column='date', exclusive_end=False):
+    if invoice_months:
+        inv_col = (date_column[:-4] + 'invoice_month'
+                   if date_column.endswith('date') else 'invoice_month')
+        return (
+            f"{inv_col} IN %(invoice_months)s AND {inv_col} != ''",
+            {'invoice_months': list(invoice_months)},
+        )
+    op_end = '<' if exclusive_end else '<='
+    return (
+        f"{date_column} >= %(start_date)s AND {date_column} {op_end} %(end_date)s",
+        {'start_date': start_date, 'end_date': end_date},
+    )
 
 
 class ExpenseController(MongoMixin, ClickHouseMixin):
@@ -49,15 +94,58 @@ class ExpenseController(MongoMixin, ClickHouseMixin):
             'pool_id', pool_ids, start_date, end_date, group_by='pool_id')
 
     def get_expenses(self, filter_field, filter_list, start_date, end_date,
-                     group_by=None):
+                     group_by=None, invoice_months=None):
         return self._get_expenses_clickhouse(
-            filter_field, filter_list, start_date, end_date, group_by)
+            filter_field, filter_list, start_date, end_date, group_by,
+            invoice_months=invoice_months)
+
+    def _find_resources_for_expenses(
+            self, mongo_filter_field, filter_list, start_date, projection,
+            skip_seen=False):
+        """Load matching resources; parallelize large $in filters by chunks."""
+        if skip_seen or start_date is None:
+            base_match = {'deleted_at': 0}
+        else:
+            start_day = start_date.replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            last_seen_ts = int(start_date.timestamp())
+            base_match = {
+                '_last_seen_date': {'$gte': start_day},
+                'last_seen': {'$gte': last_seen_ts},
+                'deleted_at': 0,
+            }
+
+        if len(filter_list) < _MONGO_FIND_PARALLEL_THRESHOLD:
+            return list(self.resources_collection.find({
+                mongo_filter_field: {'$in': filter_list},
+                **base_match,
+            }, projection))
+
+        chunks = [
+            filter_list[i:i + _MONGO_FIND_CHUNK_SIZE]
+            for i in range(0, len(filter_list), _MONGO_FIND_CHUNK_SIZE)
+        ]
+
+        def _find_chunk(chunk):
+            return list(self.resources_collection.find({
+                mongo_filter_field: {'$in': chunk},
+                **base_match,
+            }, projection))
+
+        workers = min(_MONGO_FIND_WORKERS, len(chunks))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            docs = []
+            for batch in pool.map(_find_chunk, chunks):
+                docs.extend(batch)
+            return docs
 
     def _get_expenses_clickhouse(
             self, filter_field, filter_list, start_date, end_date,
-            group_by=None):
+            group_by=None, invoice_months=None):
         if not isinstance(filter_list, list):
             filter_list = list(filter_list)
+        if not filter_list:
+            return []
 
         # TODO: this is super ugly, remove it
         resource_field_mappings = {
@@ -70,14 +158,11 @@ class ExpenseController(MongoMixin, ClickHouseMixin):
         if group_by:
             resource_fields[resource_field_mappings.get(
                 group_by, group_by)] = 1
-        resource_results = self.resources_collection.find({
-            resource_field_mappings.get(
-                filter_field, filter_field): {'$in': filter_list},
-            '_last_seen_date': {'$gte': start_date.replace(
-                hour=0, minute=0, second=0, microsecond=0)},
-            'last_seen': {'$gte': int(start_date.timestamp())},
-            'deleted_at': 0
-        }, resource_fields)
+        mongo_filter_field = resource_field_mappings.get(
+            filter_field, filter_field)
+        resource_results = self._find_resources_for_expenses(
+            mongo_filter_field, filter_list, start_date, resource_fields,
+            skip_seen=bool(invoice_months))
 
         cloud_account_ids, external_resource_table = set(), []
         for x in resource_results:
@@ -89,23 +174,26 @@ class ExpenseController(MongoMixin, ClickHouseMixin):
                 'group_field': x.get(resource_field_mappings.get(
                     group_by, group_by))
             })
+        if not cloud_account_ids or not external_resource_table:
+            return []
+        time_sql, time_params = clickhouse_time_filter(
+            invoice_months=invoice_months, start_date=start_date,
+            end_date=end_date)
         expenses_results = self.execute_clickhouse(
-            query="""
+            query=f"""
                 SELECT
                     date, group_field, cloud_account_id,
                     SUM(cost * sign) AS total_cost
                 FROM expenses
                 JOIN resources ON expenses.resource_id = resources._id
                 WHERE cloud_account_id IN %(cloud_account_ids)s
-                    AND date >= %(start_date)s
-                    AND date <= %(end_date)s
+                    AND {time_sql}
                 GROUP BY date, group_field, cloud_account_id
                 HAVING SUM(sign) > 0
                 ORDER BY total_cost DESC
             """,
             parameters={
-                'start_date': start_date,
-                'end_date': end_date,
+                **time_params,
                 'cloud_account_ids': list(cloud_account_ids),
             },
             external_data=ExternalDataConverter()([{
@@ -203,32 +291,20 @@ class ExpenseController(MongoMixin, ClickHouseMixin):
 
     def get_total_resource_counts(self, cloud_account_ids):
         """Return {cloud_account_id: resource count} from Mongo resources."""
-        if not cloud_account_ids:
-            return {}
-        pipeline = [
-            {
-                '$match': {
-                    'cloud_account_id': {'$in': list(cloud_account_ids)},
-                    'deleted_at': 0,
-                }
-            },
-            {
-                '$group': {
-                    '_id': '$cloud_account_id',
-                    'count': {'$sum': 1},
-                }
-            },
-        ]
-        return {
-            row['_id']: int(row.get('count') or 0)
-            for row in self.resources_collection.aggregate(pipeline)
-        }
+        from tools.optscale_data.expenses import count_resources_by_cloud_account
+
+        return count_resources_by_cloud_account(
+            self.resources_collection,
+            cloud_account_ids,
+            hint='CloudAccountID',
+        )
 
     def get_raw_expenses(self, start_date, end_date, filters):
-        match_filters = [{'start_date': {'$lt': end_date}}]
+        match_filters = list(filters)
+        if end_date is not None:
+            match_filters.insert(0, {'start_date': {'$lt': end_date}})
         if start_date:
             match_filters.append({'end_date': {'$gt': start_date}})
-        match_filters.extend(filters)
         pipeline = [
             {'$match': {'$and': match_filters}}
         ]
@@ -382,8 +458,17 @@ class FormattedExpenseController(BaseController):
         else:
             return getattr(obj, 'organization_id', None)
 
-    def get_formatted_expenses(self, obj, start_date, end_date):
+    def get_formatted_expenses(self, obj, start_date, end_date,
+                               invoice_months=None):
         field, filter_list = self.get_filter_params(obj)
+        if invoice_months:
+            db_result = list(self.expense_ctrl.get_expenses(
+                field, filter_list, None, None,
+                group_by=self.GROUPING_FIELD,
+                invoice_months=invoice_months
+            ))
+            return self.get_formatted_result(
+                db_result, obj, datetime.min, 0)
         start = datetime.fromtimestamp(start_date)
         end = datetime.fromtimestamp(end_date)
         delta = self.get_delta(end, end_date, start, start_date)
@@ -529,6 +614,107 @@ class CloudFilteredPoolFormattedExpenseController(
         return self._cloud_map
 
 
+# Align with ngui/ui/src/utils/dataSourceVendors.ts: tenant types collapse into
+# the same vendor family used by the Resources Data Source filter.
+_VENDOR_BY_CLOUD_TYPE = {
+    'aws_cnr': ('aws', 'AWS', 'aws_cnr'),
+    'gcp_cnr': ('gcp', 'GCP', 'gcp_cnr'),
+    'gcp_tenant': ('gcp', 'GCP', 'gcp_cnr'),
+    'azure_cnr': ('azure', 'Azure', 'azure_cnr'),
+    'azure_tenant': ('azure', 'Azure', 'azure_cnr'),
+    'snowflake': ('snowflake', 'Snowflake', 'snowflake'),
+    'snowflake_tenant': ('snowflake', 'Snowflake', 'snowflake'),
+    'alibaba_cnr': ('alibaba', 'Alibaba', 'alibaba_cnr'),
+    'databricks': ('databricks', 'Databricks', 'databricks'),
+    'nebius': ('nebius', 'Nebius', 'nebius'),
+    'kubernetes_cnr': ('kubernetes', 'Kubernetes', 'kubernetes_cnr'),
+    'environment': ('environment', 'Environment', 'environment'),
+}
+
+
+def _vendor_info_for_cloud_type(cloud_type):
+    mapped = _VENDOR_BY_CLOUD_TYPE.get(cloud_type)
+    if mapped:
+        vendor_id, name, icon_type = mapped
+        return vendor_id, name, icon_type
+    return cloud_type or 'unknown', cloud_type or 'unknown', cloud_type or 'environment'
+
+
+class VendorFilteredFormattedExpenseController(FilteredFormattedExpenseController):
+    """Group pool expenses by data-source vendor (AWS/GCP/…), not by account."""
+
+    GROUPING_FIELD = 'cloud_account_id'
+    FILTER_NAME = 'vendor'
+
+    def get_cloud_map(self, db_result):
+        cloud_ids = set(
+            x.get('_id', {}).get(self.GROUPING_FIELD) for x in db_result)
+        return {
+            cloud.id: cloud.to_dict()
+            for cloud in self.session.query(CloudAccount).filter(and_(
+                CloudAccount.id.in_(cloud_ids),
+                CloudAccount.deleted.is_(False)
+            )).all()
+        }
+
+    def get_info_map(self, db_result, obj):
+        cloud_map = self.get_cloud_map(db_result)
+        vendors = {}
+        cloud_to_vendor = {}
+        for cloud_id, cloud in cloud_map.items():
+            cloud_type = cloud.get('type')
+            if hasattr(cloud_type, 'value'):
+                cloud_type = cloud_type.value
+            vendor_id, name, icon_type = _vendor_info_for_cloud_type(cloud_type)
+            if vendor_id not in vendors:
+                vendors[vendor_id] = {
+                    'id': vendor_id,
+                    'name': name,
+                    'type': icon_type,
+                    'cloud_account_ids': [],
+                }
+            vendors[vendor_id]['cloud_account_ids'].append(cloud_id)
+            # Shared dict so costs for accounts of the same vendor merge.
+            cloud_to_vendor[cloud_id] = vendors[vendor_id]
+        return cloud_to_vendor
+
+    def get_breakdown_group_base(self, info):
+        base = super().get_breakdown_group_base(info)
+        base['type'] = info['type']
+        return base
+
+    def get_breakdown_group_type(self, info):
+        base = super().get_breakdown_group_type(info)
+        base['type'] = info.get('type')
+        base['cloud_account_ids'] = list(info.get('cloud_account_ids') or [])
+        return base
+
+
+class VendorFilteredPoolFormattedExpenseController(
+    VendorFilteredFormattedExpenseController, PoolFormattedExpenseController
+):
+    def get_info_map(self, db_result, obj):
+        cloud_map = self._cloud_map if self._cloud_map is not None else self.get_cloud_map(
+            db_result)
+        vendors = {}
+        cloud_to_vendor = {}
+        for cloud_id, cloud in cloud_map.items():
+            cloud_type = cloud.get('type')
+            if hasattr(cloud_type, 'value'):
+                cloud_type = cloud_type.value
+            vendor_id, name, icon_type = _vendor_info_for_cloud_type(cloud_type)
+            if vendor_id not in vendors:
+                vendors[vendor_id] = {
+                    'id': vendor_id,
+                    'name': name,
+                    'type': icon_type,
+                    'cloud_account_ids': [],
+                }
+            vendors[vendor_id]['cloud_account_ids'].append(cloud_id)
+            cloud_to_vendor[cloud_id] = vendors[vendor_id]
+        return cloud_to_vendor
+
+
 class PoolFilteredExpenseController(FilteredFormattedExpenseController):
     GROUPING_FIELD = 'pool_id'
     FILTER_NAME = 'pool'
@@ -578,7 +764,12 @@ class PoolExpensesExportFilteredExpenseController(PoolFilteredExpenseController)
             result['expenses']['breakdown'][not_existing_date] = [self.get_breakdown_group_day(
                 {'id': get_nil_uuid(), 'name': '(not set)'}, float(0))]
 
-    def get_formatted_expenses(self, obj, start_date, end_date):
+    def get_formatted_expenses(self, obj, start_date, end_date,
+                               invoice_months=None):
+        if invoice_months:
+            self.all_day_starts = []
+            return super().get_formatted_expenses(
+                obj, start_date, end_date, invoice_months=invoice_months)
         start = datetime.fromtimestamp(start_date)
         end = datetime.fromtimestamp(end_date)
         delta = self.get_delta(end, end_date, start, start_date)
@@ -795,7 +986,8 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         'cloud_account': ('cloud_account_id', 'cloud_account_id',
                           ['id', 'name', 'type', 'account_id']),
         'owner': ('employee_id', 'owner_id', ['id', 'name']),
-        'pool': ('pool_id', 'pool_id', ['id', 'name', 'purpose'])
+        'pool': ('pool_id', 'pool_id',
+                 ['id', 'name', 'purpose', 'parent_id'])
     }
     WITH_SUBPOOLS_SIGN = '+'
     IDENTITY_DELIMITER = ':'
@@ -808,6 +1000,7 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         super().__init__(*args, **kwargs)
         self.start_date = None
         self.end_date = None
+        self.invoice_months = None
 
     def join_db_info(self, resources_map, expenses, organization_id,
                      organization_cloud_acc):
@@ -855,13 +1048,15 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         expense['constraint_violated'] = expense.get(
             'constraint_violated', False)
         expense['tags'] = expense.get('tags', {})
+        expense['virtual_tags'] = expense.get('virtual_tags') or []
 
     def _fill_expenses_data(self, expenses, entities):
         result_expenses = {}
         expenses_map = {e['resource_id']: e for e in expenses}
         for resource_id, resource in entities.get('resource_id', {}).items():
-            if resource.get('cluster_id'):
-                # will be processed as a part of cluster record
+            cluster_id = resource.get('cluster_id')
+            if cluster_id and entities.get('resource_id', {}).get(cluster_id):
+                # Cluster parent is in this result; members roll up there.
                 continue
             expense = expenses_map.get(resource_id, {})
             resource['cost'] = expense.get('cost', 0)
@@ -918,31 +1113,37 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         return list(result.values())
 
     def get_expenses(self, cloud_account_ids, resource_ids, start_date,
-                     end_date, limit=0) -> tuple:
+                     end_date, limit=0, group_invoice_month=False) -> tuple:
         return self._get_expenses_clickhouse(
-            cloud_account_ids, resource_ids, start_date, end_date, limit)
+            cloud_account_ids, resource_ids, start_date, end_date, limit,
+            group_invoice_month=group_invoice_month)
 
     def _get_expenses_clickhouse(self, cloud_account_ids, resource_ids,
-                                 start_date, end_date, limit) -> tuple:
-        query = """
+                                 start_date, end_date, limit,
+                                 group_invoice_month=False) -> tuple:
+        time_sql, time_params = clickhouse_time_filter(
+            invoice_months=self.invoice_months, start_date=start_date,
+            end_date=end_date)
+        month_select = 'invoice_month,' if group_invoice_month else ''
+        month_group = ', invoice_month' if group_invoice_month else ''
+        query = f"""
             SELECT
                 cloud_account_id,
                 resource_id,
+                {month_select}
                 SUM(cost * sign) AS total_cost
             FROM expenses
             WHERE cloud_account_id IN cloud_account_ids
                 AND resource_id IN resource_ids
-                AND date >= %(start_date)s
-                AND date <= %(end_date)s
-            GROUP BY cloud_account_id, resource_id
+                AND {time_sql}
+            GROUP BY cloud_account_id, resource_id{month_group}
             HAVING SUM(sign) > 0
             ORDER BY total_cost DESC
         """
         if limit:
             query += 'LIMIT %(limit)s'
         params = {
-                'start_date': start_date,
-                'end_date': end_date,
+                **time_params,
                 'limit': limit,
             }
         external_tables = [
@@ -963,7 +1164,7 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             external_data=ExternalDataConverter()(external_tables),
         )
         # since current clickhouse-connect doesn't support totals
-        totals_query = """
+        totals_query = f"""
             SELECT
                 NULL AS cloud_account_id,
                 NULL AS resource_id,
@@ -975,8 +1176,7 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
                 FROM expenses
                 WHERE cloud_account_id IN cloud_account_ids
                   AND resource_id IN resource_ids
-                  AND date >= %(start_date)s
-                  AND date <= %(end_date)s
+                  AND {time_sql}
             ) AS totals
             WHERE total_sign > 0
              """
@@ -989,11 +1189,19 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             total = totals_result[0][2]
         except IndexError:
             total = 0
-        return [{
-            'cloud_account_id': x[0],
-            'resource_id': x[1],
-            'cost': x[2]
-        } for x in result], total
+        rows = []
+        for x in result:
+            row = {
+                'cloud_account_id': x[0],
+                'resource_id': x[1],
+            }
+            if group_invoice_month:
+                row['invoice_month'] = x[2]
+                row['cost'] = x[3]
+            else:
+                row['cost'] = x[2]
+            rows.append(row)
+        return rows, total
 
     def _get_object_entities(self, organization_id, model):
         objects = self.session.query(model).filter(
@@ -1116,6 +1324,7 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             '_id': {
                 'cloud_account_id': '$cloud_account_id',
                 'cluster_id': '$cluster_id',
+                'cluster_type_id': {'$ifNull': ['$cluster_type_id', None]},
                 'day': {'$trunc': {
                     '$divide': ['$first_seen', DAY_IN_SECONDS]}},
             },
@@ -1125,6 +1334,25 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             {'$match': match_query},
             {'$group': group_stage}
         ], allowDiskUse=True)
+
+    def _resource_ids_for_invoice_months(self, cloud_account_ids):
+        cloud_account_ids = [c_id for c_id in cloud_account_ids if c_id]
+        if not cloud_account_ids or not self.invoice_months:
+            return []
+        result = self.execute_clickhouse(
+            query="""
+                SELECT DISTINCT resource_id
+                FROM expenses
+                WHERE cloud_account_id IN %(cloud_account_ids)s
+                    AND invoice_month IN %(invoice_months)s
+                    AND invoice_month != ''
+            """,
+            parameters={
+                'cloud_account_ids': list(cloud_account_ids),
+                'invoice_months': list(self.invoice_months),
+            },
+        )
+        return [row[0] for row in result]
 
     def generate_filters_pipeline(self, organization_id, start_date,
                                   end_date, params, data_filters):
@@ -1145,33 +1373,38 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         filters: list[dict] = [
             {'deleted_at': 0}
         ]
-        first_seen_lte = data_filters.get('first_seen_lte')
-        if first_seen_lte is not None:
-            end_date = min(end_date, first_seen_lte)
-        last_seen_gte = data_filters.get('last_seen_gte')
-        if last_seen_gte is not None:
-            start_date = max(start_date, last_seen_gte)
-        seen_filters = {
-            'first_seen': {'$lte': end_date},
-            '_first_seen_date': {'$lte': timestamp_to_day_start(
-                end_date)},
-            'last_seen': {'$gte': start_date},
-            '_last_seen_date': {'$gte': timestamp_to_day_start(
-                start_date)}
-        }
-        first_seen_gte = data_filters.get('first_seen_gte')
-        if first_seen_gte is not None:
-            seen_filters['first_seen'].update({'$gte': first_seen_gte})
-            seen_filters['_first_seen_date'].update({
-                '$gte': timestamp_to_day_start(first_seen_gte)
-            })
-        last_seen_lte = data_filters.get('last_seen_lte')
-        if last_seen_lte is not None:
-            seen_filters['last_seen'].update({'$lte': last_seen_lte})
-            seen_filters['_last_seen_date'].update({
-                '$lte': timestamp_to_day_start(last_seen_lte)
-            })
-        filters.append(seen_filters)
+        if self.invoice_months:
+            billed_ids = self._resource_ids_for_invoice_months(
+                cloud_account_ids)
+            filters.append({'_id': {'$in': billed_ids}})
+        else:
+            first_seen_lte = data_filters.get('first_seen_lte')
+            if first_seen_lte is not None:
+                end_date = min(end_date, first_seen_lte)
+            last_seen_gte = data_filters.get('last_seen_gte')
+            if last_seen_gte is not None:
+                start_date = max(start_date, last_seen_gte)
+            seen_filters = {
+                'first_seen': {'$lte': end_date},
+                '_first_seen_date': {'$lte': timestamp_to_day_start(
+                    end_date)},
+                'last_seen': {'$gte': start_date},
+                '_last_seen_date': {'$gte': timestamp_to_day_start(
+                    start_date)}
+            }
+            first_seen_gte = data_filters.get('first_seen_gte')
+            if first_seen_gte is not None:
+                seen_filters['first_seen'].update({'$gte': first_seen_gte})
+                seen_filters['_first_seen_date'].update({
+                    '$gte': timestamp_to_day_start(first_seen_gte)
+                })
+            last_seen_lte = data_filters.get('last_seen_lte')
+            if last_seen_lte is not None:
+                seen_filters['last_seen'].update({'$lte': last_seen_lte})
+                seen_filters['_last_seen_date'].update({
+                    '$lte': timestamp_to_day_start(last_seen_lte)
+                })
+            filters.append(seen_filters)
         resource_type_condition = self.get_resource_type_condition(
             params.pop('resource_type', []))
         if resource_type_condition:
@@ -1196,6 +1429,14 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             for v in meta_filters:
                 meta_vals.append({f'meta.{v}': {'$exists': True}})
             filters.append({'$or': meta_vals})
+        vt_filter = build_virtual_tag_mongo_filter(
+            params.pop('virtual_tag', None), nil_uuid,
+            quarters=(
+                quarters_for_invoice_months(self.invoice_months)
+                or [current_quarter()]
+            ))
+        if vt_filter:
+            filters.append(vt_filter)
 
         for regex_key, query_key in {
             'name_like': 'name',
@@ -1331,6 +1572,8 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
 
     def _get_resource_traffic_expenses(
             self, cloud_account_types, from_list, to_list):
+        if self.invoice_months:
+            return {}
         where_exp = """
             cloud_account_id in %(cloud_account_ids)s
             AND date >= %(start_date)s
@@ -1433,13 +1676,26 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         offset = kwargs['offset'] or 0
         _, organization_cloud_accs = self.get_organization_and_cloud_accs(
             organization_id)
+        vt_share_map = load_virtual_tag_cost_shares(
+            self.resources_collection,
+            list(not_clustered_resources) + list(clustered_resources_map),
+            filters.get('virtual_tag'),
+            invoice_months=self.invoice_months)
+        mixed_vt_shares = any(
+            isinstance(share, dict) for share in vt_share_map.values())
         if not_clustered_resources:
-            _lim = limit
-            if offset:
-                _lim = 0
+            _lim = 0 if (offset or vt_share_map) else limit
             not_clustered_expenses, cost = self.get_expenses(
                 cloud_account_ids, not_clustered_resources, self.start_date,
-                self.end_date, limit=_lim)
+                self.end_date, limit=_lim,
+                group_invoice_month=mixed_vt_shares)
+            if vt_share_map:
+                self._apply_virtual_tag_cost_shares(
+                    not_clustered_expenses, vt_share_map)
+                if mixed_vt_shares:
+                    not_clustered_expenses = self._collapse_expenses_by_resource(
+                        not_clustered_expenses)
+                cost = sum(item.get('cost', 0) for item in not_clustered_expenses)
             total_cost += cost
         if clustered_resources_map:
             all_account_ids = list(map(
@@ -1447,6 +1703,10 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             clustered_expenses, cost = self.get_clustered_expenses(
                 all_account_ids, clustered_resources_map, self.start_date,
                 self.end_date)
+            if vt_share_map:
+                self._apply_virtual_tag_cost_shares(
+                    clustered_expenses, vt_share_map)
+                cost = sum(item.get('cost', 0) for item in clustered_expenses)
             total_cost += cost
         expenses = sorted(not_clustered_expenses + clustered_expenses,
                           key=lambda x: x['cost'], reverse=True)
@@ -1462,9 +1722,12 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
                 joined_ids = list(filter(
                     lambda x: x not in offset_ids, joined_ids
                 ))[offset - len(offset_ids):]
+            clustered_member_ids = set(clustered_resources_map)
             for r_id in joined_ids:
                 if len(resource_ids) == limit:
                     break
+                if r_id in clustered_member_ids:
+                    continue
                 resource_ids.add(r_id)
         else:
             resource_ids.update(joined_ids)
@@ -1484,19 +1747,65 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
             'sub_resources_map': cluster_id_cloud_res,
             **expenses_data
         }
+        if self.invoice_months:
+            res['invoice_months'] = self.invoice_months
         if limit:
             res['limit'] = limit
         if offset:
             res['offset'] = offset
         return res
 
+    @staticmethod
+    def _apply_virtual_tag_cost_shares(expenses, share_map):
+        if not share_map:
+            return
+        for expense in expenses:
+            share = share_map.get(expense.get('resource_id'), 1.0)
+            if isinstance(share, dict):
+                month = expense.get('invoice_month')
+                share = share.get(month, 1.0) if month else 1.0
+            expense['cost'] = (
+                expense.get('cost', 0) * share)
+
+    @staticmethod
+    def _collapse_expenses_by_resource(expenses):
+        collapsed = {}
+        for expense in expenses:
+            resource_id = expense.get('resource_id')
+            if resource_id not in collapsed:
+                collapsed[resource_id] = dict(expense)
+                continue
+            collapsed[resource_id]['cost'] = (
+                collapsed[resource_id].get('cost', 0)
+                + expense.get('cost', 0))
+        return list(collapsed.values())
+
     def handle_filters(self, params, filters, organization_id):
         for k, v in params.items():
             if v is None:
                 filters.pop(k)
+        invoice_months = normalize_invoice_months(
+            params.get('invoice_months'))
+        if invoice_months:
+            if (params.get('start_date') is not None or
+                    params.get('end_date') is not None):
+                raise WrongArgumentsException(Err.OE0580, [])
+            params.pop('invoice_months', None)
+            filters.pop('invoice_months', None)
+            params.pop('start_date', None)
+            params.pop('end_date', None)
+            filters.pop('start_date', None)
+            filters.pop('end_date', None)
+            self.invoice_months = invoice_months
+            self.start_date = None
+            self.end_date = None
+        else:
+            params.pop('invoice_months', None)
+            filters.pop('invoice_months', None)
+            self.invoice_months = None
+            self.start_date = params.pop('start_date')
+            self.end_date = params.pop('end_date')
         self.check_filters(filters, organization_id)
-        self.start_date = params.pop('start_date')
-        self.end_date = params.pop('end_date')
 
     def get(self, organization_id, **params):
         filters = params.copy()
@@ -1559,20 +1868,33 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         cloud_account_ids = set()
         input_resource_ids = input_filters.get('resource_id', [])
         input_ca_ids = input_filters.get('cloud_account_id', [])
+        real_ca_filter = any(
+            c_id and c_id != get_nil_uuid() for c_id in input_ca_ids)
         cluster_id_cloud_res = defaultdict(list)
         cluster_ids = set()
         for data in resources_data:
             _id = data['_id']
             ca_id = _id.get('cloud_account_id')
             cluster_id = _id.get('cluster_id')
+            cluster_type_id = _id.get('cluster_type_id')
             r_ids = data.pop('resources', [])
-            if ca_id is None and cluster_id is None:
+            # Parents used to have no CA; keep that path for un-backfilled docs.
+            if cluster_type_id or (ca_id is None and cluster_id is None):
+                if ca_id:
+                    cloud_account_ids.add(ca_id)
+                if real_ca_filter:
+                    # Members are listed on this CA; parent has no own expenses.
+                    continue
                 cluster_ids.update(r_ids)
+                continue
             if ca_id:
                 cloud_account_ids.add(ca_id)
                 if cluster_id:
-                    if input_ca_ids:
-                        # hide clustered resources if ca_id specified
+                    if real_ca_filter:
+                        # Parent did not match this CA filter (legacy no-CA
+                        # parent, or a different project). Count members as
+                        # regular resources so the CA total stays complete.
+                        not_clustered_resources.extend(r_ids)
                         continue
                     res_ids_in = list(filter(
                         lambda x: x in input_resource_ids, r_ids))
@@ -1617,9 +1939,11 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
 
     def format_resource(self, resource, last_run_ts):
         optional_params = ['name', 'region', 'employee_id', 'pool_id',
-                           'meta', 'tags', 'last_seen', 'is_environment']
+                           'meta', 'tags', 'last_seen', 'is_environment',
+                           'virtual_tags']
         default_values = {
-            'last_seen': 0, 'meta': {}, 'tags': {}, 'is_environment': False
+            'last_seen': 0, 'meta': {}, 'tags': {}, 'is_environment': False,
+            'virtual_tags': []
         }
         exclude_fields = ['excluded_recommendations',
                           'dismissed_recommendations', 'dismissed']
@@ -1633,6 +1957,12 @@ class CleanExpenseController(BaseController, MongoMixin, ClickHouseMixin,
         if not active:
             resource['meta']['cloud_console_link'] = None
         resource['tags'] = encoded_tags(resource.get('tags'), True)
+        quarters = (
+            quarters_for_invoice_months(self.invoice_months)
+            or [current_quarter()])
+        resource['virtual_tags'] = merge_virtual_tags_for_quarters(
+            resource, quarters)
+        resource.pop('virtual_tags_by_quarter', None)
 
         recommendations = resource.pop('recommendations', None)
         for field in exclude_fields:
@@ -1709,7 +2039,37 @@ class RawExpenseController(CleanExpenseController):
         return res
 
     def get_expenses(self, cloud_account_ids, resource_ids, start_date,
-                     end_date, limit=0) -> tuple:
+                     end_date, limit=0, group_invoice_month=False) -> tuple:
+        if self.invoice_months:
+            (
+                cloud_resource_ids,
+                cloud_resource_hashes,
+                cloud_account_ids,
+            ) = self._get_cloud_resource_ids(resource_ids)
+            nil_uuid = get_nil_uuid()
+            for filter_values in (
+                cloud_resource_ids,
+                cloud_resource_hashes,
+                cloud_account_ids,
+            ):
+                for n, filter_value in enumerate(filter_values):
+                    if filter_value == nil_uuid:
+                        filter_values[n] = None
+            expenses = []
+            for field, list_ids in [
+                ('resource_id', cloud_resource_ids),
+                ('resource_hash', cloud_resource_hashes)
+            ]:
+                if not list_ids:
+                    continue
+                filters = [
+                    {"cloud_account_id": {"$in": cloud_account_ids}},
+                    {field: {"$in": list_ids}},
+                    {"invoice_month": {"$in": self.invoice_months}},
+                ]
+                expenses.extend(list(self.expense_ctrl.get_raw_expenses(
+                    None, None, filters)))
+            return expenses, self.get_expenses_total_cost(expenses)
         start = datetime.fromtimestamp(start_date)
         end = datetime.fromtimestamp(end_date)
         (
@@ -1770,6 +2130,8 @@ class RawExpenseController(CleanExpenseController):
         }
 
     def get_expenses_total_cost(self, expenses):
+        if self.invoice_months:
+            return sum(e.get('cost', 0) or 0 for e in expenses)
         start_date = datetime.fromtimestamp(self.start_date)
         end_date = datetime.fromtimestamp(self.end_date)
         interval = (end_date - start_date).days
@@ -1814,19 +2176,20 @@ class SummaryExpenseController(CleanExpenseController):
     JOIN_TRAFFIC_EXPENSES = False
 
     def _get_clickhouse_total_cost(self, resource_ids):
+        if not resource_ids:
+            return 0
+        time_sql, time_params = clickhouse_time_filter(
+            invoice_months=self.invoice_months, start_date=self.start_date,
+            end_date=self.end_date)
         result = self.execute_clickhouse(
-            query="""
+            query=f"""
                 SELECT
                     SUM(cost * sign) AS total_cost
                 FROM expenses
                 WHERE resource_id IN resource_ids
-                    AND date >= %(start_date)s
-                    AND date <= %(end_date)s
+                    AND {time_sql}
             """,
-            parameters={
-                'start_date': self.start_date,
-                'end_date': self.end_date,
-            },
+            parameters=time_params,
             external_data=ExternalDataConverter()([{
                 'name': 'resource_ids',
                 'structure': [
@@ -1835,16 +2198,19 @@ class SummaryExpenseController(CleanExpenseController):
                 'data': [{'_id': r_id} for r_id in resource_ids]
             }]),
         )
-        return result[0][0]
+        return result[0][0] or 0
 
     def _get_result_base(self):
-        return {
+        res = {
             'start_date': self.start_date,
             'end_date': self.end_date,
             'total_count': 0,
             'total_cost': 0,
             'total_saving': 0
         }
+        if self.invoice_months:
+            res['invoice_months'] = self.invoice_months
+        return res
 
     @staticmethod
     def _pipeline_unwind_steps():
@@ -1915,6 +2281,11 @@ class SummaryExpenseController(CleanExpenseController):
         last_run_ts = self.get_last_run_ts_by_org_id(organization_id)
         active = params.get('active', [])
         recommendation = params.get('recommendations', [])
+        ca_filter = filters.get('cloud_account_id', [])
+        if not isinstance(ca_filter, list):
+            ca_filter = [ca_filter]
+        real_ca_filter = any(
+            c_id and c_id != get_nil_uuid() for c_id in ca_filter)
         filter_cond = self.generate_filters_pipeline(
             organization_id, self.start_date, self.end_date,
             query_filters, data_filters)
@@ -1954,10 +2325,15 @@ class SummaryExpenseController(CleanExpenseController):
         excl_clusters = set()
         cluster_sub_res = {}
         for res_group in sorted(
-                data, key=lambda x: x['_id']['cluster_type_id'] or ''):
+                data, key=lambda x: (
+                    x['_id']['cluster_type_id'] is None,
+                    x['_id']['cluster_type_id'] or '')):
             cluster_id = res_group['_id']['cluster_id']
             cluster_type_id = res_group['_id']['cluster_type_id']
             if cluster_type_id:
+                if real_ca_filter:
+                    # Members are listed on this CA; parent has no own expenses.
+                    continue
                 # clusters
                 cluster_ids = list(filter(
                     lambda x: x not in all_resource_ids and x not in excl_clusters,
@@ -1972,20 +2348,29 @@ class SummaryExpenseController(CleanExpenseController):
                 # clustered resources
                 if cluster_id in excl_clusters:
                     continue
+                if cluster_id in all_resource_ids:
+                    # Parent already matched (has cloud_account_id).
+                    continue
                 if (False in recommendation and True not in recommendation
                         and res_group['run_timestamp']):
                     excl_clusters.add(cluster_id)
+                    continue
+                if real_ca_filter:
+                    # Parent did not match this CA filter. Count members as
+                    # regular resources so the CA total stays complete.
+                    result['total_saving'] += res_group['total_saving']
+                    all_resource_ids.extend(res_group['resource_ids'])
+                    counted_resource_ids.extend(res_group['resource_ids'])
                     continue
                 if (False in active and True not in active and
                         cluster_id not in all_resource_ids):
                     # cluster for this clustered resource is active
                     continue
-                if 'cloud_account_id' not in filters:
-                    if cluster_id not in cluster_savings_map:
-                        cluster_savings_map[cluster_id] = 0
-                    cluster_savings_map[cluster_id] += res_group['total_saving']
-                    all_resource_ids.extend(res_group['resource_ids'])
-                    counted_resource_ids.append(cluster_id)
+                if cluster_id not in cluster_savings_map:
+                    cluster_savings_map[cluster_id] = 0
+                cluster_savings_map[cluster_id] += res_group['total_saving']
+                all_resource_ids.extend(res_group['resource_ids'])
+                counted_resource_ids.append(cluster_id)
             else:
                 # not clustered resources
                 result['total_saving'] += res_group['total_saving']
@@ -2000,8 +2385,46 @@ class SummaryExpenseController(CleanExpenseController):
             if cluster not in excl_clusters:
                 all_resource_ids.extend(sub_res)
         result['total_count'] += len(set(counted_resource_ids))
-        result['total_cost'] = self._get_clickhouse_total_cost(
-            all_resource_ids)
+        vt_params = filters.get('virtual_tag')
+        raw_ca = filters.get('cloud_account_id')
+        if raw_ca is not None and not isinstance(raw_ca, list):
+            raw_ca = [raw_ca]
+        if raw_ca:
+            raw_ca = [
+                c_id for c_id in raw_ca
+                if c_id and c_id != get_nil_uuid()]
+            if not raw_ca:
+                raw_ca = None
+        resource_ids = list(set(all_resource_ids))
+        if not resource_ids:
+            result['total_cost'] = 0
+        elif vt_params:
+            if raw_ca:
+                cloud_account_ids = list(raw_ca)
+            else:
+                _, organization_cloud_accs = self.get_organization_and_cloud_accs(
+                    organization_id)
+                cloud_account_ids = (
+                    [account.id for account in organization_cloud_accs]
+                    + [get_nil_uuid()])
+            share_map = load_virtual_tag_cost_shares(
+                self.resources_collection, resource_ids, vt_params,
+                invoice_months=self.invoice_months)
+            mixed = any(isinstance(share, dict) for share in share_map.values())
+            expenses, _ = self.get_expenses(
+                cloud_account_ids, resource_ids,
+                self.start_date, self.end_date,
+                group_invoice_month=mixed)
+            self._apply_virtual_tag_cost_shares(expenses, share_map)
+            result['total_cost'] = sum(
+                item.get('cost', 0) for item in expenses)
+        elif raw_ca:
+            _, result['total_cost'] = self.get_expenses(
+                list(raw_ca), resource_ids,
+                self.start_date, self.end_date)
+        else:
+            result['total_cost'] = self._get_clickhouse_total_cost(
+                resource_ids)
         result['total_saving'] += sum(x for x in cluster_savings_map.values())
         return result
 
@@ -2080,10 +2503,11 @@ class RegionExpenseController(FilteredFormattedExpenseController,
             scanned.append(cloud_config['type'])
         return res
 
-    def get_expenses(self, org_id, start_date, end_date):
+    def get_expenses(self, org_id, start_date, end_date, invoice_months=None):
         _, organization_cloud_accs = self.get_organization_and_cloud_accs(org_id)
         return self.get_formatted_expenses(organization_cloud_accs,
-                                           start_date, end_date)
+                                           start_date, end_date,
+                                           invoice_months=invoice_months)
 
     def get_formatted_result(self, db_result, cloud_accs, starting_time, prev_start_ts):
         result = self.get_result_base(prev_start_ts)

@@ -9,6 +9,12 @@ import biExportsRoute from "./biExportsRoute";
 import cloudCostComparisonRoute from "./cloudCostComparisonRoute";
 import cloudExpensesRoute from "./cloudExpensesRoute";
 import clusterTypesRoute from "./clusterTypesRoute";
+import createVirtualTagRoute from "./createVirtualTagRoute";
+import createVirtualTagRuleRoute from "./createVirtualTagRuleRoute";
+import editVirtualTagRoute from "./editVirtualTagRoute";
+import editVirtualTagRuleRoute from "./editVirtualTagRuleRoute";
+import virtualTagRoute from "./virtualTagRoute";
+import virtualTagsRoute from "./virtualTagsRoute";
 import connectJiraRoute from "./connectJiraRoute";
 import connectSlackRoute from "./connectSlackRoute";
 import createAnomalyRoute from "./createAnomalyRoute";
@@ -23,6 +29,7 @@ import createPowerScheduleRoute from "./createPowerScheduleRoute";
 import createQuotaAndBudgetPolicyRoute from "./createQuotaAndBudgetPolicyRoute";
 import createResourceAssignmentRuleRoute from "./createResourceAssignmentRuleRoute";
 import createTaggingPolicyRoute from "./createTaggingPolicyRoute";
+import editTaggingPolicyRoute from "./editTaggingPolicyRoute";
 import dataSourceOverviewRoute from "./dataSourceOverviewRoute";
 import dataSourcesRoute from "./dataSourcesRoute";
 import editAssignmentRuleRoute from "./editAssignmentRuleRoute";
@@ -110,6 +117,7 @@ export const routes = [
   taggingPoliciesRoute,
   taggingPolicyRoute,
   createTaggingPolicyRoute,
+  editTaggingPolicyRoute,
   k8sRightsizingRoute,
   createAnomalyRoute,
   createQuotaAndBudgetPolicyRoute,
@@ -144,6 +152,12 @@ export const routes = [
   connectSlackRoute,
   connectJiraRoute,
   clusterTypesRoute,
+  virtualTagsRoute,
+  virtualTagRoute,
+  createVirtualTagRoute,
+  createVirtualTagRuleRoute,
+  editVirtualTagRoute,
+  editVirtualTagRuleRoute,
   environmentsRoute,
   createEnvironmentRoute,
   createClusterTypeRoute,

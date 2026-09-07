@@ -69,11 +69,13 @@ const Table = ({
   onRowSelectionChange,
   withExpanded,
   getSubRows = (row) => row.children,
+  getRowCanExpand,
   getRowId,
   expanded,
   onExpandedChange,
   actionBar,
   columnsSelectorUID,
+  defaultHiddenColumns,
   columnSetsSelectorId,
   columnOrder,
   onColumnOrderChange,
@@ -127,30 +129,36 @@ const Table = ({
     columns: columnsProperty,
   });
 
-  const { state: columnsVisibilityState, tableOptions: columnsVisibilityTableOptions } =
-    useColumnsVisibility(columnsSelectorUID);
+  const { state: columnsVisibilityState, tableOptions: columnsVisibilityTableOptions } = useColumnsVisibility(
+    columnsSelectorUID,
+    defaultHiddenColumns
+  );
+
+  const { state: expandedState, tableOptions: expandedTableOptions } = useExpandedTableSettings({
+    withExpanded,
+    getSubRows,
+    getRowCanExpand,
+    expanded,
+    onExpandedChange,
+  });
 
   const totalRowsCount = getRowsCount(data, {
     withExpanded,
     getSubRows,
   });
 
+  // Pagination applies to top-level rows only. Expanded children are kept on
+  // the parent page (paginateExpandedRows: false) and paginated by the caller
+  // when needed so sibling roots do not disappear.
   const { state: paginationState, tableOptions: paginationTableOptions } = usePaginationTableSettings({
     pageSize,
-    rowsCount: totalRowsCount,
+    rowsCount: data.length,
     queryParamPrefix,
     enablePaginationQueryParam,
   });
 
   const columns = useColumns(columnsProperty, {
     withSelection,
-  });
-
-  const { state: expandedState, tableOptions: expandedTableOptions } = useExpandedTableSettings({
-    withExpanded,
-    getSubRows,
-    expanded,
-    onExpandedChange,
   });
 
   const { state: columnOrderState, tableOptions: columnOrderTableOptions } = useColumnOrderTableSettings({

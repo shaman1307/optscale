@@ -32,7 +32,10 @@ const ResourceLimitHits = ({ limitHits, isLoading }) => {
       {
         header: <TextWithDataTestId messageId="type" dataTestId="lbl_type" />,
         accessorKey: "type",
-        cell: ({ cell }) => <FormattedMessage id={CONSTRAINTS_TYPES[cell.getValue()]} />,
+        cell: ({ cell }) => {
+          const messageId = CONSTRAINTS_TYPES[cell.getValue()];
+          return messageId ? <FormattedMessage id={messageId} /> : cell.getValue();
+        },
       },
       {
         header: <TextWithDataTestId messageId="scope" dataTestId="lbl_scope" />,
@@ -61,7 +64,10 @@ const ResourceLimitHits = ({ limitHits, isLoading }) => {
         header: <TextWithDataTestId messageId="time" dataTestId="lbl_time" />,
         accessorKey: "time",
         defaultSort: "desc",
-        cell: ({ cell }) => format(secondsToMilliseconds(cell.getValue()), EN_FULL_FORMAT),
+        cell: ({ cell }) => {
+          const timestamp = cell.getValue();
+          return Number.isFinite(timestamp) ? format(secondsToMilliseconds(timestamp), EN_FULL_FORMAT) : "";
+        },
       },
     ];
   }, []);

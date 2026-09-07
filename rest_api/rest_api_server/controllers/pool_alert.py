@@ -50,6 +50,11 @@ class PoolAlertController(BaseController):
         ).filter(
             PoolAlert.deleted.is_(False)
         ).all()
+        # Skip expensive hierarchy/expense aggregation when there is nothing
+        # to evaluate — concurrent post-import calls were timing out / 500'ing
+        # on large orgs even with zero cost/forecast alerts.
+        if not affected_alerts:
+            return []
 
         pool_limit_costs = PoolController(
             self.session, self._config, self.token
@@ -72,14 +77,16 @@ class PoolAlertController(BaseController):
 
             for pool_id in pool_ids:
                 pool_info = pool_limit_costs.get(pool_id)
-                based = pool_info.get(alert.based.value)
+                if not pool_info:
+                    continue
+                based = pool_info.get(alert.based.value) or 0
                 if alert.threshold_type == ThresholdTypes.ABSOLUTE:
                     if based > alert.threshold:
                         if alert.id not in alert_pools:
                             alert_pools[alert.id] = []
                         alert_pools[alert.id].append(pool_info['id'])
                 elif alert.threshold_type == ThresholdTypes.PERCENTAGE:
-                    limit = pool_info['limit']
+                    limit = pool_info.get('limit') or 0
                     if ((limit > 0 and based * 100 / limit > alert.threshold) or
                             (limit == 0 and based > 0)):
                         if alert.id not in alert_pools:

@@ -58,6 +58,7 @@ import {
   CONNECTION_TYPES,
   DATABRICKS,
   SNOWFLAKE,
+  SNOWFLAKE_TENANT,
   GCP_CNR,
   GCP_TENANT,
   KUBERNETES_CNR,
@@ -94,6 +95,7 @@ type CloudType =
   | typeof NEBIUS
   | typeof DATABRICKS
   | typeof SNOWFLAKE
+  | typeof SNOWFLAKE_TENANT
   | typeof KUBERNETES_CNR;
 
 type CloudProviderTypes = Record<
@@ -274,6 +276,7 @@ const getGoogleParameters = async (formData: FieldValues) => {
       billing_data: {
         dataset_name: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_DATASET],
         table_name: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_TABLE],
+        resource_table_name: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE] || undefined,
         project_id: formData[GCP_CREDENTIALS_FIELD_NAMES.BILLING_DATA_PROJECT_ID] || undefined,
       },
       ...(formData[GCP_CREDENTIALS_FIELD_NAMES.AUTOMATICALLY_DETECT_PRICING_DATA]
@@ -300,6 +303,7 @@ const getGoogleTenantParameters = async (formData: FieldValues) => {
       billing_data: {
         dataset_name: formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_DATASET],
         table_name: formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_TABLE],
+        resource_table_name: formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.BILLING_DATA_RESOURCE_TABLE] || undefined,
       },
       ...(formData[GCP_TENANT_CREDENTIALS_FIELD_NAMES.AUTOMATICALLY_DETECT_PRICING_DATA]
         ? {}
@@ -344,20 +348,24 @@ const getDatabricksParameters = (formData: FieldValues) => ({
   },
 });
 
-const getSnowflakeParameters = (formData: FieldValues) => ({
-  name: formData[DATA_SOURCE_NAME_FIELD_NAME],
-  type: SNOWFLAKE,
-  config: {
-    account: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT],
-    user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
-    private_key: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY],
-    warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
-    role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
-    billing_source:
-      formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE] || "account_usage",
-    cost_model: { credit_price: 0, storage_price_per_tb_month: 23 },
-  },
-});
+const getSnowflakeParameters = (formData: FieldValues) => {
+  const billingSource = formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BILLING_SOURCE] || "account_usage";
+  const backupWarehouse = formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.BACKUP_WAREHOUSE]?.trim();
+  // Always send type=snowflake; restapi remaps organization_usage → snowflake_tenant.
+  return {
+    name: formData[DATA_SOURCE_NAME_FIELD_NAME],
+    type: SNOWFLAKE,
+    config: {
+      account: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ACCOUNT],
+      user: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.USER],
+      private_key: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.PRIVATE_KEY],
+      warehouse: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.WAREHOUSE],
+      ...(backupWarehouse ? { backup_warehouse: backupWarehouse } : {}),
+      role: formData[SNOWFLAKE_CREDENTIALS_FIELD_NAMES.ROLE] || "ACCOUNTADMIN",
+      billing_source: billingSource,
+    },
+  };
+};
 
 const renderConnectionTypeDescription = (settings) =>
   settings.map(({ key, messageId, values }, index) => (
@@ -694,6 +702,7 @@ const ConnectCloudAccountForm = ({ onSubmit, onCancel, isLoading = false, showCa
                       [KUBERNETES_CNR]: getKubernetesParameters,
                       [DATABRICKS]: getDatabricksParameters,
                       [SNOWFLAKE]: getSnowflakeParameters,
+                      [SNOWFLAKE_TENANT]: getSnowflakeParameters,
                     }[cloudType];
 
                     onSubmit(await getParameters(formData));

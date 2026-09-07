@@ -7,7 +7,7 @@ export type BreakdownTotals = Record<string, BreakdownDatum>;
 
 export type Breakdown = Record<string, Record<string, BreakdownDatum>>;
 
-type RequestParams = Record<string, string>;
+type RequestParams = Record<string, unknown>;
 
 export type TotalsTableProps = {
   startDate: number;

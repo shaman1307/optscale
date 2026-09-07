@@ -19,6 +19,7 @@ import {
   K8S_NODE_FILTER,
   TAG_FILTER,
   WITHOUT_TAG_FILTER,
+  NO_TAG_FILTER,
   K8S_NAMESPACE_FILTER,
   POOL_ID_FILTER,
   K8S_SERVICE_FILTER,
@@ -31,7 +32,14 @@ import {
   LAST_SEEN_FROM_FILTER,
   LAST_SEEN_TO_FILTER,
   META_FILTER,
+  VIRTUAL_TAG_FILTER,
 } from "utils/constants";
+import { isIncompleteBillingPeriod, toExpensePeriodApiParams } from "utils/costPeriod";
+
+const isNoTagFilterApplied = (noTag) => {
+  const values = Array.isArray(noTag) ? noTag : [noTag];
+  return values.some((value) => value === true || value === "true");
+};
 
 export const mapAvailableFilterKeys = (params) => ({
   cloud_account_id: params[CLOUD_ACCOUNT_ID_FILTER],
@@ -47,9 +55,10 @@ export const mapAvailableFilterKeys = (params) => ({
   first_seen_lte: params[FIRST_SEEN_TO_FILTER],
   last_seen_gte: params[LAST_SEEN_FROM_FILTER],
   last_seen_lte: params[LAST_SEEN_TO_FILTER],
-  tag: params[TAG_FILTER],
+  tag: isNoTagFilterApplied(params[NO_TAG_FILTER]) ? [EMPTY_UUID] : params[TAG_FILTER],
   without_tag: params[WITHOUT_TAG_FILTER],
   meta: params[META_FILTER],
+  virtual_tag: params[VIRTUAL_TAG_FILTER] ?? params.virtual_tag,
   traffic_from: params[NETWORK_TRAFFIC_FROM_FILTER],
   traffic_to: params[NETWORK_TRAFFIC_TO_FILTER],
   k8s_node: params[K8S_NODE_FILTER],
@@ -88,6 +97,7 @@ export const mapFiltersToApiParams = (filters) => {
     tag: filters.tag,
     without_tag: filters.without_tag,
     meta: filters.meta,
+    virtual_tag: filters.virtual_tag ?? filters.virtualTag,
     traffic_from: filters.traffic_from?.map(getObjectValue((obj) => `${obj.name}:${obj.cloud_type}`)),
     traffic_to: filters.traffic_to?.map(getObjectValue((obj) => `${obj.name}:${obj.cloud_type}`)),
     k8s_node: filters.k8s_node?.map(getObjectValue("name")),
@@ -104,22 +114,30 @@ export const useGet = (params = {}, exceptions) => {
     apiData: { filter_values: filters },
   } = useApiData(GET_AVAILABLE_FILTERS, { filter_values: {} });
 
+  const facets = params.facets ?? "core";
+
+  const periodParams = toExpensePeriodApiParams({
+    startDate: params[START_DATE_FILTER],
+    endDate: params[END_DATE_FILTER],
+    invoiceMonths: params.invoiceMonths ?? params.invoice_months,
+  });
+
   const { isLoading, shouldInvoke } = useApiState(GET_AVAILABLE_FILTERS, {
     organizationId,
-    start_date: params[START_DATE_FILTER],
-    end_date: params[END_DATE_FILTER],
+    ...periodParams,
+    facets,
   });
 
   useEffect(() => {
-    if (shouldInvoke) {
+    if (shouldInvoke && !isIncompleteBillingPeriod(params)) {
       dispatch(
         getAvailableFilters(organizationId, {
-          start_date: params[START_DATE_FILTER],
-          end_date: params[END_DATE_FILTER],
+          ...periodParams,
+          facets,
         })
       );
     }
-  }, [dispatch, shouldInvoke, params, organizationId]);
+  }, [dispatch, shouldInvoke, params, organizationId, facets]);
 
   const filtersWithoutExceptions = useMemo(
     () =>

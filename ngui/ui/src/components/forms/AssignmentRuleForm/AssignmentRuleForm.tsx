@@ -57,8 +57,12 @@ const AssignmentRuleForm = ({
       } = FIELD_NAMES.CONDITIONS_FIELD_ARRAY;
 
       return formData[FIELD_NAME].map((item) => {
+        const { ID } = FIELD_NAMES.CONDITIONS_FIELD_ARRAY;
+        const withId = item[ID] ? { [ID]: item[ID] } : {};
+
         if (TAG_KEY_FIELD_NAME in item) {
           return {
+            ...withId,
             [META_INFO]: JSON.stringify({
               key: item[TAG_KEY_FIELD_NAME].trim(),
               value: item[TAG_VALUE_FIELD_NAME].trim(),
@@ -68,12 +72,14 @@ const AssignmentRuleForm = ({
         }
         if (CLOUD_IS_FIELD_NAME in item) {
           return {
+            ...withId,
             [META_INFO]: item[CLOUD_IS_FIELD_NAME].trim(),
             [TYPE]: item[TYPE],
           };
         }
         if (RESOURCE_TYPE_IS_FIELD_NAME in item) {
           return {
+            ...withId,
             [META_INFO]: item[RESOURCE_TYPE_IS_FIELD_NAME].trim(),
             [TYPE]: item[TYPE],
           };
@@ -82,6 +88,7 @@ const AssignmentRuleForm = ({
           const { regionName } = item[REGION_IS_FIELD_NAME];
 
           return {
+            ...withId,
             [META_INFO]: regionName === null ? null : regionName.trim(),
             [TYPE]: item[TYPE],
           };

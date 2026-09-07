@@ -52,8 +52,8 @@ const CommonConstraints = ({ poolId, resourceId, constraints, poolPolicies, isLo
 const ResourceConstraints = ({
   resourceId,
   poolId,
-  constraints,
-  poolPolicies,
+  constraints = {},
+  poolPolicies = {},
   employeeId,
   clusterId,
   isLoading,

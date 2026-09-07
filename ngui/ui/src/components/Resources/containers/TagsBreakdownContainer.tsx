@@ -54,8 +54,8 @@ const TagsBreakdownContainer = ({ requestParams }) => {
       selectedTag={selectedTag}
       updateSelectedTag={updateSelectedTag}
       appliedRange={{
-        startSecondsTimestamp: Number(requestParams.startDate),
-        endSecondsTimestamp: Number(requestParams.endDate),
+        startSecondsTimestamp: Number(requestParams.startDate) || 0,
+        endSecondsTimestamp: Number(requestParams.endDate) || 0,
       }}
     />
   );

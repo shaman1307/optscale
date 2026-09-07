@@ -1882,6 +1882,7 @@ class TestApplyRuleApi(TestRulesApiBase):
         cluster = next(self.resources_collection.find(
             {'cluster_type_id': ct['id']}))
         self._verify_assignments(result['resources'], expected_map)
+        # tag_exists rule targets org pool and outranks the default Cloud is
         self.assertEqual(cluster.get('pool_id'), self.org_pool_id)
 
     @patch(AUTHORIZE_ACTION_METHOD)
@@ -2592,6 +2593,9 @@ class TestRulesApplyApi(TestRulesApiBase):
             self.org_id, {'name': 'c_type', 'tag_key': 'tn'})
         self.assertEqual(code, 201)
         resources = self._create_resources(['my_1', 'm2'], tags={'tn': 'tv'})
+        self.verify_assignment(
+            resources[0]['cluster_id'], self.cloud_acc_rule['pool_id'],
+            self.employee['id'])
 
         conditions = [
             {"type": "tag_exists", "meta_info": "tn"}
@@ -2599,7 +2603,8 @@ class TestRulesApplyApi(TestRulesApiBase):
         rule = self._create_rule('rule1', conditions=conditions,
                                  set_allowed=True)
 
-        code, resp = self.client.rules_apply(self.org_id, self.org_pool_id)
+        code, resp = self.client.rules_apply(
+            self.org_id, self.cloud_acc_rule['pool_id'])
 
         m_activities_publish.assert_has_calls([
             call(self.org_id, self.org_id, 'organization',
@@ -2614,7 +2619,7 @@ class TestRulesApplyApi(TestRulesApiBase):
 
         self.assertEqual(code, 201)
         self.assertEqual(resp['processed'], 1)
-        self.assertEqual(resp['updated_assignments'], 0)
+        self.assertEqual(resp['updated_assignments'], 1)
         self.verify_assignment(resources[0]['cluster_id'], self.org_pool_id,
                                self.employee['id'])
         self.verify_assignment(resources[0]['id'], self.org_pool_id,

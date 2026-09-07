@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import Grid from "@mui/material/Grid";
 import ButtonGroup from "components/ButtonGroup";
 import { getBasicRangesSet, getCustomRange } from "components/DateRangePicker/defaults";
-import RangePickerFormContainer from "containers/RangePickerFormContainer";
+import CostPeriodSelector from "components/CostPeriodSelector";
 import ResourcePaidNetworkTrafficContainer from "containers/ResourcePaidNetworkTrafficContainer";
 import ResourceRawExpensesContainer from "containers/ResourceRawExpensesContainer";
 import { useResourceDetailsDefaultDateRange } from "hooks/useResourceDetailsDefaultDateRange";
-import { RESOURCE_PAGE_EXPENSES_TABS, DATE_RANGE_FILTERS, DATE_RANGE_TYPE } from "utils/constants";
+import { RESOURCE_PAGE_EXPENSES_TABS, DATE_RANGE_FILTERS, DATE_RANGE_TYPE, INVOICE_MONTHS_FILTER } from "utils/constants";
+import { COST_PERIOD_BILLING, COST_PERIOD_DATE, normalizeInvoiceMonths } from "utils/costPeriod";
 import { millisecondsToSeconds, performDateTimeFunction, startOfDay, endOfDay, secondsToMilliseconds } from "utils/datetime";
 import { SPACING_2 } from "utils/layouts";
 import { getSearchParams, updateSearchParams } from "utils/network";
@@ -67,30 +68,55 @@ const ResourceExpenses = ({ resourceId, firstSeen, lastSeen, hasNetworkTrafficEx
     defaultMode: RESOURCE_PAGE_EXPENSES_TABS.GROUPED,
   });
 
-  const [requestParams, setRequestParams] = useState({
-    startDate,
-    endDate,
+  const [requestParams, setRequestParams] = useState(() => {
+    const invoiceMonths = normalizeInvoiceMonths(getSearchParams()[INVOICE_MONTHS_FILTER]);
+    return {
+      startDate,
+      endDate,
+      invoiceMonths,
+      periodType: invoiceMonths.length ? COST_PERIOD_BILLING : COST_PERIOD_DATE,
+    };
   });
 
+  const isTraffic = activeExpensesMode === RESOURCE_PAGE_EXPENSES_TABS.PAID_NETWORK_TRAFFIC;
+
   useEffect(() => {
+    if (requestParams.periodType === COST_PERIOD_BILLING && requestParams.invoiceMonths?.length) {
+      updateSearchParams({
+        [INVOICE_MONTHS_FILTER]: requestParams.invoiceMonths,
+        startDate: null,
+        endDate: null,
+      });
+      return;
+    }
     updateSearchParams({
       startDate: requestParams.startDate,
       endDate: requestParams.endDate,
+      [INVOICE_MONTHS_FILTER]: null,
     });
-  }, [requestParams.startDate, requestParams.endDate]);
+  }, [requestParams.startDate, requestParams.endDate, requestParams.invoiceMonths, requestParams.periodType]);
 
   const firstSeenStartOfDay = millisecondsToSeconds(
     performDateTimeFunction(startOfDay, true, secondsToMilliseconds(firstSeen))
   );
   const lastSeenEndOfDay = millisecondsToSeconds(performDateTimeFunction(endOfDay, true, secondsToMilliseconds(lastSeen)));
 
-  const applyFilter = ({ startDate: newStartDate, endDate: newEndDate }) => {
-    const params = {
+  const applyFilter = ({ startDate: newStartDate, endDate: newEndDate, invoiceMonths, periodType }) => {
+    if (periodType === COST_PERIOD_BILLING || invoiceMonths?.length) {
+      setRequestParams({
+        ...requestParams,
+        invoiceMonths: invoiceMonths || [],
+        periodType: COST_PERIOD_BILLING,
+      });
+      return;
+    }
+    setRequestParams({
       ...requestParams,
       startDate: newStartDate,
       endDate: newEndDate,
-    };
-    setRequestParams(params);
+      invoiceMonths: [],
+      periodType: COST_PERIOD_DATE,
+    });
   };
 
   return (
@@ -103,10 +129,22 @@ const ResourceExpenses = ({ resourceId, firstSeen, lastSeen, hasNetworkTrafficEx
         />
       </Grid>
       <Grid item>
-        <RangePickerFormContainer
+        <CostPeriodSelector
+          periodType={requestParams.periodType}
+          onPeriodTypeChange={(nextType) => {
+            if (nextType === COST_PERIOD_DATE) {
+              applyFilter({
+                startDate: requestParams.startDate,
+                endDate: requestParams.endDate,
+                periodType: COST_PERIOD_DATE,
+              });
+              return;
+            }
+            applyFilter({ periodType: COST_PERIOD_BILLING, invoiceMonths: requestParams.invoiceMonths });
+          }}
+          onApplyDates={applyFilter}
           initialStartDateValue={requestParams.startDate}
           initialEndDateValue={requestParams.endDate}
-          onApply={applyFilter}
           definedRanges={[
             getCustomRange({
               messageId: DATE_RANGE_FILTERS.ALL,
@@ -119,6 +157,9 @@ const ResourceExpenses = ({ resourceId, firstSeen, lastSeen, hasNetworkTrafficEx
           rangeType={DATE_RANGE_TYPE.RESOURCES}
           minDate={firstSeenStartOfDay}
           maxDate={lastSeenEndOfDay}
+          invoiceMonths={requestParams.invoiceMonths}
+          onInvoiceMonthsChange={(months) => applyFilter({ invoiceMonths: months, periodType: COST_PERIOD_BILLING })}
+          forceDateRange={isTraffic}
         />
       </Grid>
       <Grid item xs={12}>
@@ -127,6 +168,8 @@ const ResourceExpenses = ({ resourceId, firstSeen, lastSeen, hasNetworkTrafficEx
             resourceId={resourceId}
             startDate={requestParams.startDate}
             endDate={requestParams.endDate}
+            invoiceMonths={requestParams.invoiceMonths}
+            periodType={requestParams.periodType}
             expensesMode={activeExpensesMode}
           />
         )}

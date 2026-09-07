@@ -231,6 +231,7 @@ class ClickHouseMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._clickhouse_client = None
+        self._clickhouse_lock = threading.Lock()
 
     @property
     def clickhouse_client(self):
@@ -243,7 +244,9 @@ class ClickHouseMixin:
         return self._clickhouse_client
 
     def execute_clickhouse(self, query, **params):
-        return self.clickhouse_client.query(query=query, **params).result_rows
+        with self._clickhouse_lock:
+            return self.clickhouse_client.query(
+                query=query, **params).result_rows
 
 
 class FilterValidationMixin(SupportedFiltersMixin):

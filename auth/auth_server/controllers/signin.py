@@ -21,7 +21,8 @@ from auth.auth_server.controllers.token import TokenController
 from auth.auth_server.controllers.user import UserController
 from auth.auth_server.exceptions import Err
 from auth.auth_server.utils import (
-    check_kwargs_is_empty, pop_or_raise, check_string_attribute)
+    check_kwargs_is_empty, pop_or_raise, check_string_attribute, Config)
+from optscale_client.rest_api_client.client_v2 import Client as RestApiClient
 from tools.optscale_exceptions.common_exc import (
     WrongArgumentsException, ForbiddenException)
 
@@ -199,6 +200,125 @@ class MicrosoftOauth2Provider:
             raise ForbiddenException(Err.OA0012, [])
 
 
+class OidcOauth2Provider:
+    """Generic OIDC authorization-code provider (OneLogin, etc.)."""
+
+    def __init__(self):
+        self._issuer = (os.environ.get('OIDC_ISSUER') or '').rstrip('/')
+        self._client_id = os.environ.get('OIDC_CLIENT_ID')
+        self._client_secret = os.environ.get('OIDC_CLIENT_SECRET')
+        self._discovery = None
+        self._config_loaded = False
+        self._ui_disabled = False
+
+    def _ensure_config(self):
+        if self._config_loaded:
+            return
+        self._config_loaded = True
+        try:
+            client = RestApiClient(
+                url=Config().restapi_url,
+                secret=Config().cluster_secret)
+            _, cfg = client.sso_login_config_get(include_secret=True)
+        except Exception as exc:
+            LOG.warning('Could not load OIDC config from rest_api: %s', exc)
+            return
+        if not isinstance(cfg, dict):
+            return
+        if cfg.get('configured') and not cfg.get('enabled'):
+            self._ui_disabled = True
+            return
+        if not cfg.get('enabled'):
+            return
+        self._issuer = (cfg.get('issuer') or '').rstrip('/')
+        self._client_id = cfg.get('client_id')
+        self._client_secret = cfg.get('client_secret')
+
+    def client_id(self):
+        self._ensure_config()
+        if self._ui_disabled or not self._client_id:
+            raise ForbiddenException(Err.OA0012, [])
+        return self._client_id
+
+    def client_secret(self):
+        self._ensure_config()
+        if self._ui_disabled or not self._client_secret:
+            raise ForbiddenException(Err.OA0012, [])
+        return self._client_secret
+
+    def issuer(self):
+        self._ensure_config()
+        if self._ui_disabled or not self._issuer:
+            raise ForbiddenException(Err.OA0012, [])
+        return self._issuer
+
+    def get_discovery(self):
+        if self._discovery is None:
+            url = f'{self.issuer()}/.well-known/openid-configuration'
+            resp = requests.get(url, timeout=30)
+            if not resp.ok:
+                raise ValueError(
+                    f'Received {resp.status_code} from {url}')
+            self._discovery = resp.json()
+        return self._discovery
+
+    def exchange_token(self, code, redirect_uri):
+        token_endpoint = self.get_discovery()['token_endpoint']
+        resp = requests.post(
+            token_endpoint,
+            data={
+                'grant_type': 'authorization_code',
+                'code': code,
+                'redirect_uri': redirect_uri,
+                'client_id': self.client_id(),
+                'client_secret': self.client_secret(),
+            },
+            headers={
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            timeout=30,
+        )
+        if not resp.ok:
+            raise ValueError(resp.text)
+        id_token = resp.json().get('id_token')
+        if not id_token:
+            raise ValueError('token response has no id_token')
+        return id_token
+
+    @staticmethod
+    def _email_and_name(claims):
+        email = claims.get('email') or claims.get('preferred_username')
+        if not email:
+            raise KeyError('email')
+        name = claims.get('name') or email
+        return email, name
+
+    def verify(self, code, **kwargs):
+        try:
+            redirect_uri = kwargs.pop('redirect_uri', None)
+            if not redirect_uri:
+                raise ForbiddenException(Err.OA0012, [])
+            id_token = self.exchange_token(code, redirect_uri)
+            discovery = self.get_discovery()
+            jwks_client = jwt.PyJWKClient(discovery['jwks_uri'])
+            signing_key = jwks_client.get_signing_key_from_jwt(id_token)
+            header = jwt.get_unverified_header(id_token)
+            claims = jwt.decode(
+                id_token,
+                signing_key.key,
+                audience=self.client_id(),
+                issuer=discovery.get('issuer') or self.issuer(),
+                algorithms=[header.get('alg', 'RS256')],
+            )
+            return self._email_and_name(claims)
+        except ForbiddenException:
+            raise
+        except (ValueError, KeyError, jwt.PyJWTError,
+                requests.RequestException) as ex:
+            LOG.error(str(ex))
+            raise ForbiddenException(Err.OA0012, [])
+
+
 class SignInController(BaseController):
     def __init__(self, db_session, config=None):
         self._user_ctl = None
@@ -233,7 +353,8 @@ class SignInController(BaseController):
     def _get_verifier_class(provider):
         return {
             'google': GoogleOauth2Provider,
-            'microsoft': MicrosoftOauth2Provider
+            'microsoft': MicrosoftOauth2Provider,
+            'oidc': OidcOauth2Provider,
         }.get(provider)
 
     @staticmethod

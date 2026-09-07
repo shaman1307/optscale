@@ -104,6 +104,7 @@ const apiMiddleware =
             code: successCode,
           })
         );
+        return response;
       })
       .catch((error) => {
         let errorResponse;

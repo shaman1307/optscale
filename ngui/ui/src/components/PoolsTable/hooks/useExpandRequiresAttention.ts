@@ -1,6 +1,6 @@
 import { useDispatch } from "react-redux";
 import { getRecursiveParent } from "utils/arrays";
-import { isCostOverLimit, isForecastOverLimit } from "utils/pools";
+import { getPoolTypeGroupId, isCostOverLimit, isForecastOverLimit } from "utils/pools";
 import { setExpandedRows } from "../actionCreators";
 
 const useExpandRequiresAttention = (rootPool) => {
@@ -10,7 +10,10 @@ const useExpandRequiresAttention = (rootPool) => {
 
     const expandArray = pools
       .filter(({ limit, cost, forecast }) => isCostOverLimit({ limit, cost }) || isForecastOverLimit({ limit, forecast }))
-      .flatMap((p) => [...getRecursiveParent(p, pools, "id")], []);
+      .flatMap((pool) => {
+        const typeGroupId = pool.parent_id ? getPoolTypeGroupId(pool.parent_id, pool.purpose || "budget") : null;
+        return [...getRecursiveParent(pool, pools, "id"), ...(typeGroupId ? [typeGroupId] : [])];
+      });
 
     const uniqueExpandArray = [...new Set(expandArray)];
 

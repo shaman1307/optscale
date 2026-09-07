@@ -14,6 +14,7 @@ export default gql`
     nebius
     databricks
     snowflake
+    snowflake_tenant
     kubernetes_cnr
     environment
   }
@@ -41,6 +42,8 @@ export default gql`
     total_resources: Int
     billing_period_start: Int
     billing_period_end: Int
+    duplicate_groups: Int
+    cost_mismatch: Boolean
   }
 
   interface DataSourceInterface {
@@ -146,6 +149,7 @@ export default gql`
   type GcpBillingDataConfig {
     dataset_name: String!
     table_name: String!
+    resource_table_name: String
     project_id: String
   }
 
@@ -181,6 +185,7 @@ export default gql`
   type GcpTenantBillingDataConfig {
     dataset_name: String!
     table_name: String!
+    resource_table_name: String
     project_id: String
   }
 
@@ -287,18 +292,14 @@ export default gql`
   }
 
   # Snowflake data source
-  type SnowflakeCostModelConfig {
-    credit_price: Float
-    storage_price_per_tb_month: Float
-  }
-
   type SnowflakeConfig {
     account: String
     user: String
     role: String
     warehouse: String
+    backup_warehouse: String
     billing_source: String
-    cost_model: SnowflakeCostModelConfig
+    region: String
   }
 
   type SnowflakeDataSource implements DataSourceInterface {
@@ -419,6 +420,7 @@ export default gql`
   input GcpBillingDataConfigInput {
     dataset_name: String!
     table_name: String!
+    resource_table_name: String
     project_id: String
   }
 
@@ -474,9 +476,9 @@ export default gql`
     user: String!
     private_key: String
     warehouse: String!
+    backup_warehouse: String
     role: String
     billing_source: String
-    cost_model: JSONObject
   }
 
   input CreateDataSourceInput {
@@ -565,6 +567,7 @@ export default gql`
     cloud_account_id
     employee_id
     pool_id
+    subpool
     k8s_node
     k8s_namespace
     k8s_service
@@ -572,8 +575,9 @@ export default gql`
   }
 
   input BreakdownParams {
-    start_date: Int!
-    end_date: Int!
+    start_date: Int
+    end_date: Int
+    invoice_months: [String!]
     breakdown_by: String!
     cloud_account_id: [String!]
     pool_id: [String!]
@@ -606,13 +610,13 @@ export default gql`
     breakdown: JSONObject!
     first_breakdown: Int!
     last_breakdown: Int!
-    breakdown_by: BreakdownBy!
+    breakdown_by: String!
     counts: JSONObject!
   }
 
   type ExpensesDailyBreakdown {
     breakdown: JSONObject!
-    breakdown_by: BreakdownBy!
+    breakdown_by: String!
     counts: JSONObject!
     previous_range_start: Int!
     previous_total: Int!
@@ -675,8 +679,9 @@ export default gql`
   }
 
   input CleanExpensesParams {
-    start_date: Int!
-    end_date: Int!
+    start_date: Int
+    end_date: Int
+    invoice_months: [String!]
     limit: Int
     active: [Boolean]
     constraint_violated: [Boolean]
@@ -695,6 +700,7 @@ export default gql`
     tag: [String]
     without_tag: [String]
     meta: [String]
+    virtual_tag: [String]
     traffic_from: [String]
     traffic_to: [String]
     first_seen_gte: Int
@@ -709,8 +715,10 @@ export default gql`
   }
 
   input AvailableFiltersParams {
-    start_date: Int!
-    end_date: Int!
+    start_date: Int
+    end_date: Int
+    invoice_months: [String!]
+    facets: String
     cloud_account_id: [String!]
     pool_id: [String!]
     owner_id: [String!]
@@ -727,6 +735,7 @@ export default gql`
     tag: [String!]
     without_tag: [String!]
     meta: [String!]
+    virtual_tag: [String!]
     traffic_from: [String!]
     traffic_to: [String!]
     k8s_node: [String!]
@@ -855,12 +864,35 @@ export default gql`
     details: JSONObject
   }
 
+  type ResourceDuplicateResource {
+    id: String!
+    name: String
+    resource_type: String
+    cloud_account_id: String!
+  }
+
+  type ResourceDuplicateGroup {
+    cloud_account_id: String!
+    cloud_account_name: String
+    cloud_resource_id: String!
+    count: Int!
+    resources: [ResourceDuplicateResource!]!
+  }
+
+  type ResourceDuplicates {
+    cloud_account_id: String!
+    count: Int!
+    checked_at: Int!
+    duplicate_groups: [ResourceDuplicateGroup!]!
+  }
+
   type Query {
     organizations: [Organization!]!
     currentEmployee(organizationId: ID!): Employee
     dataSources(organizationId: ID!): [DataSourceInterface]
     dataSource(dataSourceId: ID!, requestParams: DataSourceRequestParams): DataSourceInterface
     reportImports(cloudAccountId: ID!, showCompleted: Boolean): [ReportImport!]!
+    resourceDuplicates(cloudAccountId: ID!): ResourceDuplicates!
     employeeEmails(employeeId: ID!): [EmployeeEmail]
     invitations: [Invitation]
     organizationFeatures(organizationId: ID!): JSONObject

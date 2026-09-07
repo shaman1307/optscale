@@ -14,7 +14,7 @@ import TabsWrapper from "components/TabsWrapper";
 import Tooltip from "components/Tooltip";
 import TypographyLoader from "components/TypographyLoader";
 import ExpensesSummaryContainer from "containers/ExpensesSummaryContainer";
-import RangePickerFormContainer from "containers/RangePickerFormContainer";
+import CostPeriodSelector from "components/CostPeriodSelector";
 import { useOpenSideModal } from "hooks/useOpenSideModal";
 import { useOrganizationInfo } from "hooks/useOrganizationInfo";
 import {
@@ -27,6 +27,7 @@ import {
   RESOURCES_PERSPECTIVE_PARAMETER_NAME,
 } from "urls";
 import { CLEAN_EXPENSES_BREAKDOWN_TYPES, DATE_RANGE_TYPE } from "utils/constants";
+import { COST_PERIOD_DATE } from "utils/costPeriod";
 import { SPACING_2 } from "utils/layouts";
 import { getSearchParams } from "utils/network";
 import { isEmptyObject } from "utils/objects";
@@ -76,6 +77,10 @@ const SelectedPerspectiveTitle = ({ perspectiveName }) => {
 const Resources = ({
   startDateTimestamp,
   endDateTimestamp,
+  periodType = COST_PERIOD_DATE,
+  invoiceMonths = [],
+  onPeriodTypeChange,
+  onInvoiceMonthsChange,
   filterValues,
   onApply,
   requestParams,
@@ -181,7 +186,7 @@ const Resources = ({
     {
       title: CLEAN_EXPENSES_BREAKDOWN_TYPES.EXPENSES,
       dataTestId: "tab_expenses",
-      node: <CleanExpensesBreakdownContainer requestParams={requestParams} />,
+      node: <CleanExpensesBreakdownContainer requestParams={requestParams} isFilterValuesLoading={isFilterValuesLoading} />,
     },
     {
       title: CLEAN_EXPENSES_BREAKDOWN_TYPES.RESOURCE_COUNT,
@@ -209,19 +214,31 @@ const Resources = ({
             <Box>
               <ExpensesSummaryContainer requestParams={requestParams} />
             </Box>
-            <RangePickerFormContainer
-              onApply={(dateRange) => onApply(dateRange)}
+            <CostPeriodSelector
+              periodType={periodType}
+              onPeriodTypeChange={onPeriodTypeChange}
+              onApplyDates={(dateRange) => onApply(dateRange)}
               initialStartDateValue={startDateTimestamp}
               initialEndDateValue={endDateTimestamp}
               rangeType={DATE_RANGE_TYPE.RESOURCES}
               definedRanges={getBasicRangesSet()}
+              invoiceMonths={invoiceMonths}
+              onInvoiceMonthsChange={onInvoiceMonthsChange}
             />
           </Box>
           <Box>
             {isFilterValuesLoading ? (
               <TypographyLoader linesCount={1} />
             ) : (
-              <Filters filters={filterValues} appliedFilters={appliedFilters} onAppliedFiltersChange={onAppliedFiltersChange} />
+              <Filters
+                filters={filterValues}
+                appliedFilters={appliedFilters}
+                onAppliedFiltersChange={onAppliedFiltersChange}
+                startDate={startDateTimestamp}
+                endDate={endDateTimestamp}
+                invoiceMonths={invoiceMonths}
+                periodType={periodType}
+              />
             )}
           </Box>
           <Box>

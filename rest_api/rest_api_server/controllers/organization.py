@@ -13,6 +13,7 @@ from rest_api.rest_api_server.controllers.organization_constraint import Organiz
 from rest_api.rest_api_server.controllers.pool import PoolController
 from rest_api.rest_api_server.controllers.organization_subscription import (
     OrganizationSubscriptionController)
+from rest_api.rest_api_server.controllers.sso_oidc import find_enabled_sso_oidc
 from rest_api.rest_api_server.exceptions import Err
 from rest_api.rest_api_server.models.enums import (
     RolePurposes, OrganizationConstraintTypes
@@ -239,7 +240,7 @@ class OrganizationController(BaseController, ClickHouseMixin):
             query = query.offset(offset)
         return query
 
-    def root_organizations_list(self, token, limit=0, offset=0):
+    def root_organizations_list(self, token, limit=0, offset=0, _joined=False):
         assignments = self._get_assignments_by_token(token)
         resource_ids = list(map(
             lambda x: x['assignment_resource'], assignments))
@@ -250,8 +251,39 @@ class OrganizationController(BaseController, ClickHouseMixin):
             )
         )
         total_count = query.count()
+        if total_count == 0 and not _joined and self._join_sso_organization():
+            return self.root_organizations_list(
+                token, limit, offset, _joined=True)
         query = self._apply_limit_offset(query, limit, offset)
         return query.all(), total_count
+
+    def _join_sso_organization(self):
+        org_id, _cfg = find_enabled_sso_oidc(self.session)
+        if not org_id:
+            return False
+        user_info = self.get_user_info()
+        user_id = user_info.get('id') if user_info else None
+        if not user_id:
+            return False
+        try:
+            self.assign_role_to_user(
+                user_id, org_id, RolePurposes.optscale_member.value,
+                'organization')
+        except FailedDependency:
+            LOG.exception(
+                'Failed to assign SSO user %s to organization %s',
+                user_id, org_id)
+            return False
+        employee_controller = EmployeeController(
+            self.session, self._config, self.token)
+        if not employee_controller.is_employee_exists(
+                org_id, auth_user_id=user_id):
+            employee_controller.create(
+                organization_id=org_id,
+                name=user_info.get('display_name') or user_info.get('email'),
+                auth_user_id=user_id)
+        LOG.info('SSO auto-joined user %s to organization %s', user_id, org_id)
+        return True
 
     def get_org_list(self, is_demo=False, with_shareable_bookings=False,
                      with_connected_accounts=False, limit=0, offset=0,

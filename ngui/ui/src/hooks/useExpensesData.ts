@@ -1,6 +1,7 @@
 import { useApiData } from "hooks/useApiData";
 import { useReactiveDefaultDateRange } from "hooks/useReactiveDefaultDateRange";
-import { DATE_RANGE_TYPE, FILTER_BY } from "utils/constants";
+import { DATE_RANGE_TYPE, FILTER_BY, INVOICE_MONTHS_FILTER } from "utils/constants";
+import { normalizeInvoiceMonths } from "utils/costPeriod";
 import { getSearchParams } from "utils/network";
 
 export const useExpensesData = (label) => {
@@ -11,6 +12,7 @@ export const useExpensesData = (label) => {
   const queryParams = getSearchParams();
 
   const { [FILTER_BY]: filterBy } = queryParams;
+  const invoiceMonths = normalizeInvoiceMonths(queryParams[INVOICE_MONTHS_FILTER]);
 
   const [startDateTimestamp, endDateTimestamp] = useReactiveDefaultDateRange(DATE_RANGE_TYPE.EXPENSES);
 
@@ -28,6 +30,7 @@ export const useExpensesData = (label) => {
     filterBy,
     startDateTimestamp,
     endDateTimestamp,
+    invoiceMonths,
     name,
     total,
     previousTotal,

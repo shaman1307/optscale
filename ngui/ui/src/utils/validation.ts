@@ -1,5 +1,4 @@
 import Ajv from "ajv";
-import { perspectiveSchema } from "schemas";
 import { intl } from "translations/react-intl-config";
 import { COST_MODEL_MONEY_MAXIMUM_FRACTION_DIGITS } from "./constants";
 import { isWhitespaceString } from "./strings";
@@ -61,8 +60,6 @@ export const validateSchema = (data, schema, options = {}) => {
 
   return [isValid, validate.errors];
 };
-
-export const validatePerspectiveSchema = (data, options = {}) => validateSchema(data, perspectiveSchema, options);
 
 export const isRunsetTemplateEnvironmentVariable = (inputName) => (value) =>
   /^[A-Z0-9_]+$/.test(value)

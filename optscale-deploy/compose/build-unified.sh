@@ -48,6 +48,11 @@ build_image() {
         full_tag="${image_name}:${TAG}"
     fi
 
+    if docker image inspect "${full_tag}" >/dev/null 2>&1; then
+        echo "Skipping ${image_name}: ${full_tag} already exists"
+        return
+    fi
+
     echo ""
     echo "Building ${image_name}: ${full_tag}"
     docker build \

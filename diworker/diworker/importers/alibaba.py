@@ -516,14 +516,16 @@ class AlibabaReportImporter(BaseReportImporter):
                 })
             clickhouse_expenses = []
             column_names = [
-                "cloud_account_id", "resource_id", "date", "cost", "sign"]
+                "cloud_account_id", "resource_id", "date", "cost", "sign",
+                "invoice_month"]
             for resource_id, date, total_cost in existing_expenses_q.result_rows:
                 clickhouse_expenses.append([
                     self.cloud_acc_id,
                     resource_id,
                     date,
                     total_cost,
-                    -1
+                    -1,
+                    '',
                 ])
             self.update_clickhouse_expenses(clickhouse_expenses,
                                             column_names)

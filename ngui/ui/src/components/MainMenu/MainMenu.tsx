@@ -4,23 +4,31 @@ import CapabilityWrapper from "components/CapabilityWrapper";
 import MenuGroupWrapper from "components/MenuGroupWrapper";
 import MenuItem from "components/MenuItem";
 import { PRODUCT_TOUR, useProductTour, PRODUCT_TOUR_IDS } from "components/Tour";
+import { useHasKubernetesDataSource } from "hooks/useHasKubernetesDataSource";
 
-const SimpleItem = ({ menuItem }) => (
-  <CapabilityWrapper capability={menuItem.capability}>
-    <MenuItem
-      className={menuItem.className}
-      dataProductTourId={menuItem.dataProductTourId}
-      link={menuItem.route.link}
-      messageId={menuItem.messageId}
-      isRootPath={menuItem.isRootPath}
-      isActive={menuItem.isActive}
-      icon={menuItem.icon}
-      dataTestId={menuItem.dataTestId}
-    />
-  </CapabilityWrapper>
-);
+const SimpleItem = ({ menuItem, hasKubernetes }) => {
+  if (menuItem.requiresKubernetes && !hasKubernetes) {
+    return null;
+  }
+
+  return (
+    <CapabilityWrapper capability={menuItem.capability}>
+      <MenuItem
+        className={menuItem.className}
+        dataProductTourId={menuItem.dataProductTourId}
+        link={menuItem.route.link}
+        messageId={menuItem.messageId}
+        isRootPath={menuItem.isRootPath}
+        isActive={menuItem.isActive}
+        icon={menuItem.icon}
+        dataTestId={menuItem.dataTestId}
+      />
+    </CapabilityWrapper>
+  );
+};
 
 const MainMenu = ({ menu }) => {
+  const hasKubernetes = useHasKubernetesDataSource();
   const { isOpen: isProductTourOpen, stepId: productTourStepId } = useProductTour(PRODUCT_TOUR);
 
   useEffect(() => {
@@ -47,7 +55,7 @@ const MainMenu = ({ menu }) => {
           <CapabilityWrapper key={id} capability={capability}>
             <MenuGroupWrapper id={id} menuSectionTitle={menuSectionTitle} keepExpanded={isProductTourOpen}>
               {items.map((item) => (
-                <SimpleItem key={item.route.link} menuItem={item} />
+                <SimpleItem key={item.route.link} menuItem={item} hasKubernetes={hasKubernetes} />
               ))}
             </MenuGroupWrapper>
           </CapabilityWrapper>

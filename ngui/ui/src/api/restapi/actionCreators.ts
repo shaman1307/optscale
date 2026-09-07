@@ -2,6 +2,7 @@ import { handleSuccess } from "api/actionCreators";
 import { MINUTE, HALF_HOUR, HOUR, ERROR_HANDLER_TYPE_LOCAL, SUCCESS_HANDLER_TYPE_ALERT } from "api/constants";
 import { apiAction, getApiUrl, hashParams } from "api/utils";
 import { DAILY_EXPENSE_LIMIT, TOTAL_EXPENSE_LIMIT, TTL } from "utils/constraints";
+import { toExpensePeriodApiParams } from "utils/costPeriod";
 import {
   GET_ORGANIZATION_OPTIONS,
   SET_ORGANIZATION_OPTIONS,
@@ -53,6 +54,11 @@ import {
   SET_EXPENSES_SUMMARY,
   GET_AVAILABLE_FILTERS,
   SET_AVAILABLE_FILTERS,
+  GET_INVOICE_MONTHS,
+  SET_INVOICE_MONTHS,
+  GET_IMPORT_SCHEDULER,
+  SET_IMPORT_SCHEDULER,
+  UPDATE_IMPORT_SCHEDULER,
   GET_REGION_EXPENSES,
   SET_REGION_EXPENSES,
   GET_ASSIGNMENT_RULES,
@@ -94,6 +100,22 @@ import {
   DELETE_CLUSTER_TYPE,
   UPDATE_CLUSTER_TYPE_PRIORITY,
   APPLY_CLUSTER_TYPES,
+  GET_VIRTUAL_TAGS,
+  SET_VIRTUAL_TAGS,
+  GET_VIRTUAL_TAG,
+  SET_VIRTUAL_TAG,
+  CREATE_VIRTUAL_TAG,
+  UPDATE_VIRTUAL_TAG,
+  DELETE_VIRTUAL_TAG,
+  UPDATE_VIRTUAL_TAG_VALUE_LIMITS,
+  GET_VIRTUAL_TAG_RULES,
+  SET_VIRTUAL_TAG_RULES,
+  CREATE_VIRTUAL_TAG_RULE,
+  UPDATE_VIRTUAL_TAG_RULE,
+  DELETE_VIRTUAL_TAG_RULE,
+  APPLY_VIRTUAL_TAG_RULES,
+  GET_VIRTUAL_TAG_APPLY_PROGRESS,
+  COPY_VIRTUAL_TAGS,
   GET_ENVIRONMENTS,
   SET_ENVIRONMENTS,
   CREATE_ENVIRONMENT,
@@ -443,7 +465,7 @@ export const updateOrganizationConstraint = (id, params) =>
     url: `${API_URL}/organization_constraints/${id}`,
     method: "PATCH",
     label: UPDATE_ORGANIZATION_CONSTRAINT,
-    affectedRequests: [GET_ORGANIZATION_CONSTRAINTS],
+    affectedRequests: [GET_ORGANIZATION_CONSTRAINTS, GET_ORGANIZATION_CONSTRAINT],
     onSuccess: onSuccessUpdateAnomaly,
     params,
   });
@@ -584,8 +606,7 @@ export const getPoolExpenses = (poolId, params) =>
     ttl: MINUTE,
     hash: hashParams({ ...params, poolId }),
     params: {
-      start_date: params.startDate,
-      end_date: params.endDate,
+      ...toExpensePeriodApiParams(params),
       filter_by: params.filterBy,
     },
   });
@@ -599,8 +620,7 @@ export const getCloudsExpenses = (cloudAccountId, params) =>
     ttl: MINUTE,
     hash: hashParams({ ...params, cloudAccountId }),
     params: {
-      start_date: params.startDate,
-      end_date: params.endDate,
+      ...toExpensePeriodApiParams(params),
       filter_by: params.filterBy,
     },
   });
@@ -614,8 +634,7 @@ export const getEmployeesExpenses = (employeeId, params) =>
     ttl: MINUTE,
     hash: hashParams({ ...params, employeeId }),
     params: {
-      start_date: params.startDate,
-      end_date: params.endDate,
+      ...toExpensePeriodApiParams(params),
       filter_by: params.filterBy,
     },
   });
@@ -732,10 +751,7 @@ export const getRawExpenses = (resourceId, params) =>
     label: GET_RAW_EXPENSES,
     ttl: 5 * MINUTE,
     hash: hashParams({ ...params, resourceId }),
-    params: {
-      start_date: params.startDate,
-      end_date: params.endDate,
-    },
+    params: toExpensePeriodApiParams(params),
   });
 
 export const getCleanExpenses = (organizationId, params) =>
@@ -771,6 +787,34 @@ export const getAvailableFilters = (organizationId, params) =>
     params,
   });
 
+export const getInvoiceMonths = (organizationId) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/invoice_months`,
+    method: "GET",
+    onSuccess: handleSuccess(SET_INVOICE_MONTHS),
+    label: GET_INVOICE_MONTHS,
+    ttl: 5 * MINUTE,
+    hash: hashParams({ organizationId }),
+  });
+
+export const getImportScheduler = (organizationId) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/import_scheduler`,
+    method: "GET",
+    onSuccess: handleSuccess(SET_IMPORT_SCHEDULER),
+    label: GET_IMPORT_SCHEDULER,
+    hash: hashParams({ organizationId }),
+  });
+
+export const updateImportScheduler = (organizationId, params) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/import_scheduler`,
+    method: "PATCH",
+    onSuccess: handleSuccess(SET_IMPORT_SCHEDULER),
+    label: UPDATE_IMPORT_SCHEDULER,
+    params,
+  });
+
 export const getResourceCountBreakdown = (organizationId, params) =>
   apiAction({
     url: `${API_URL}/organizations/${organizationId}/resources_count`,
@@ -801,10 +845,7 @@ export const getRegionExpenses = (organizationId, params) =>
     label: GET_REGION_EXPENSES,
     ttl: MINUTE,
     hash: hashParams({ ...params, organizationId }),
-    params: {
-      start_date: params.startDate,
-      end_date: params.endDate,
-    },
+    params: toExpensePeriodApiParams(params),
   });
 
 export const getTrafficExpenses = (organizationId, params) =>
@@ -1396,6 +1437,138 @@ export const applyClusterTypes = (organizationId) =>
     label: APPLY_CLUSTER_TYPES,
     affectedRequests: [GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
     params: {},
+  });
+
+export const getVirtualTags = (organizationId, params = {}) => {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value == null || value === "") {
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => search.append(key, String(item)));
+      return;
+    }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tags${query ? `?${query}` : ""}`,
+    method: "GET",
+    onSuccess: handleSuccess(SET_VIRTUAL_TAGS),
+    label: GET_VIRTUAL_TAGS,
+    ttl: MINUTE,
+    hash: hashParams({ organizationId, ...params }),
+  });
+};
+
+export const getVirtualTag = (virtualTagId) =>
+  apiAction({
+    url: `${API_URL}/virtual_tags/${virtualTagId}`,
+    method: "GET",
+    onSuccess: handleSuccess(SET_VIRTUAL_TAG),
+    label: GET_VIRTUAL_TAG,
+    ttl: MINUTE,
+    hash: hashParams(virtualTagId),
+  });
+
+export const createVirtualTag = (organizationId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tags`,
+    method: "POST",
+    label: CREATE_VIRTUAL_TAG,
+    affectedRequests: [GET_VIRTUAL_TAGS, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+    params,
+  });
+
+export const updateVirtualTag = (virtualTagId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/virtual_tags/${virtualTagId}`,
+    method: "PATCH",
+    label: UPDATE_VIRTUAL_TAG,
+    affectedRequests: [GET_VIRTUAL_TAGS, GET_VIRTUAL_TAG, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+    params,
+  });
+
+export const deleteVirtualTag = (virtualTagId) =>
+  apiAction({
+    url: `${API_URL}/virtual_tags/${virtualTagId}`,
+    method: "DELETE",
+    label: DELETE_VIRTUAL_TAG,
+    affectedRequests: [GET_VIRTUAL_TAGS, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+  });
+
+export const updateVirtualTagValueLimits = (virtualTagId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/virtual_tags/${virtualTagId}/value_limits`,
+    method: "PUT",
+    label: UPDATE_VIRTUAL_TAG_VALUE_LIMITS,
+    affectedRequests: [GET_VIRTUAL_TAG, GET_VIRTUAL_TAGS],
+    params,
+  });
+
+export const getVirtualTagRules = (organizationId, virtualTagId) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tag_rules${virtualTagId ? `?virtual_tag_id=${virtualTagId}` : ""}`,
+    method: "GET",
+    onSuccess: handleSuccess(SET_VIRTUAL_TAG_RULES),
+    label: GET_VIRTUAL_TAG_RULES,
+    ttl: MINUTE,
+    hash: hashParams({ organizationId, virtualTagId }),
+  });
+
+export const createVirtualTagRule = (organizationId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tag_rules`,
+    method: "POST",
+    label: CREATE_VIRTUAL_TAG_RULE,
+    affectedRequests: [GET_VIRTUAL_TAG_RULES, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+    params,
+  });
+
+export const updateVirtualTagRule = (ruleId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/virtual_tag_rules/${ruleId}`,
+    method: "PATCH",
+    label: UPDATE_VIRTUAL_TAG_RULE,
+    affectedRequests: [GET_VIRTUAL_TAG_RULES, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+    params,
+  });
+
+export const deleteVirtualTagRule = (ruleId) =>
+  apiAction({
+    url: `${API_URL}/virtual_tag_rules/${ruleId}`,
+    method: "DELETE",
+    label: DELETE_VIRTUAL_TAG_RULE,
+    affectedRequests: [GET_VIRTUAL_TAG_RULES, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+  });
+
+export const applyVirtualTagRules = (organizationId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tag_rules_apply`,
+    method: "POST",
+    label: APPLY_VIRTUAL_TAG_RULES,
+    affectedRequests: [GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS, GET_VIRTUAL_TAGS, GET_VIRTUAL_TAG, GET_VIRTUAL_TAG_RULES],
+    params,
+  });
+
+export const getVirtualTagApplyProgress = (organizationId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tag_rules_apply`,
+    method: "GET",
+    label: GET_VIRTUAL_TAG_APPLY_PROGRESS,
+    errorHandlerType: ERROR_HANDLER_TYPE_LOCAL,
+    allowMultipleRequests: true,
+    params,
+  });
+
+export const copyVirtualTags = (organizationId, params = {}) =>
+  apiAction({
+    url: `${API_URL}/organizations/${organizationId}/virtual_tags_copy`,
+    method: "POST",
+    label: COPY_VIRTUAL_TAGS,
+    affectedRequests: [GET_VIRTUAL_TAGS, GET_VIRTUAL_TAG, GET_VIRTUAL_TAG_RULES, GET_CLEAN_EXPENSES, GET_EXPENSES_DAILY_BREAKDOWN, GET_RESOURCE_COUNT_BREAKDOWN, GET_AVAILABLE_FILTERS],
+    params,
   });
 
 export const getEnvironments = (organizationId) =>

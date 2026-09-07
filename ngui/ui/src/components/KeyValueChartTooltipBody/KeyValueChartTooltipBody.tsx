@@ -14,7 +14,11 @@ const TooltipTypography = withStyles(Typography, {
 
 const KeyValueChartTooltipBody = ({ title, boldTitle = false, text, icon, value }) => {
   const renderLabel = () => (
-    <KeyValueLabel value={<FormattedMoney value={value} type={FORMATTED_MONEY_TYPES.COMMON} />} keyText={text} />
+    <KeyValueLabel
+      nowrap
+      value={<FormattedMoney value={value} type={FORMATTED_MONEY_TYPES.COMMON} />}
+      keyText={text}
+    />
   );
 
   return (

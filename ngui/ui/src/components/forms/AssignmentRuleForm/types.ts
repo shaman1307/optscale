@@ -21,6 +21,11 @@ export type ConditionsFieldArrayProps = {
   regions: Region[];
   name?: string;
   isLoading?: boolean;
+  enableResourceNameAutocomplete?: boolean;
+  /** Data source picker grouped by vendor, same as Resources filters. */
+  enableDataSourceFilterPicker?: boolean;
+  compact?: boolean;
+  addMessageId?: string;
 };
 
 export type FormButtonsProps = {
@@ -45,33 +50,38 @@ export type PoolSelectorProps = {
   onPoolChange: OnPoolChange;
 };
 
-type NameCondition = {
-  type: "name_starts_with" | "name_ends_with" | "name_is" | "name_contains";
-  meta_info: string;
+type WithOptionalConditionId<T> = T & {
+  // Existing condition id from API; required for PATCH to update/delete in place
+  id?: string;
 };
 
-type TagCondition = {
+type NameCondition = WithOptionalConditionId<{
+  type: "name_starts_with" | "name_ends_with" | "name_is" | "name_contains";
+  meta_info: string;
+}>;
+
+type TagCondition = WithOptionalConditionId<{
   type: "tag_is" | "tag_exists" | "tag_value_starts_with";
   meta_info_key: string;
   meta_info_value: string;
-};
+}>;
 
-type CloudCondition = {
+type CloudCondition = WithOptionalConditionId<{
   type: "cloud_is";
   meta_info_cloudId: string;
-};
+}>;
 
-type ResourceTypeCondition = {
+type ResourceTypeCondition = WithOptionalConditionId<{
   type: "resource_type_is";
   resource_type_is: string;
-};
+}>;
 
-type RegionIsCondition = {
+type RegionIsCondition = WithOptionalConditionId<{
   type: "region_is";
   region_is: {
     regionName: string | null;
   };
-};
+}>;
 
 type Condition = NameCondition | TagCondition | CloudCondition | ResourceTypeCondition | RegionIsCondition;
 

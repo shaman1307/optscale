@@ -195,7 +195,7 @@ const ResourceConstraintCard = ({
             }}
           />
         )}
-        {limitHit && limitHit.constraint_limit === limit && limitHit.time && limitHit.state === RESOURCE_LIMIT_HIT_STATE.RED ? (
+        {limitHit && limitHit.constraint_limit === limit && Number.isFinite(limitHit.time) && limitHit.state === RESOURCE_LIMIT_HIT_STATE.RED ? (
           <Icon
             dataTestId={`svg_${constraintType}_hint`}
             icon={PriorityHighOutlinedIcon}

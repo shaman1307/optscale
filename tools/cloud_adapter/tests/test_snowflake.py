@@ -7,12 +7,15 @@ from tools.cloud_adapter.clouds.snowflake import (
     WarehouseMeteringCollector,
     AutomaticClusteringCollector,
     ListingConsumptionCollector,
+    ListingAutoFulfillmentCollector,
+    DataTransferCollector,
     apply_product_tag,
     calculate_cost,
     parse_metrics,
     year_quarter,
     _cortex_code_resource,
     _row_account_name,
+    _row_region,
     enrich_account_name,
 )
 
@@ -54,6 +57,15 @@ class TestSnowflakeHelpers(unittest.TestCase):
             'SESSION_ACC')
         self.assertIsNone(_row_account_name({}))
         self.assertIsNone(_row_account_name({'account_name': '  '}))
+
+    def test_row_region(self):
+        self.assertEqual(
+            _row_region({'region': 'AWS_US_EAST_1'}), 'AWS_US_EAST_1')
+        self.assertEqual(
+            _row_region({'snowflake_region': 'AWS_EU_WEST_1'}),
+            'AWS_EU_WEST_1')
+        self.assertIsNone(_row_region({}))
+        self.assertIsNone(_row_region({'region': '  '}))
 
     def test_enrich_account_name_from_org_map(self):
         account_map = {'HW44440': 'PUBLICIS_PROD', 'CP81654': 'PUBLICIS_ADMIN'}
@@ -170,37 +182,36 @@ class TestSnowflakeHelpers(unittest.TestCase):
             resource_name,
             'Cortex Code · Snowsight · alice@example.com')
 
-    def test_calculate_cost_credits_and_overrides(self):
-        cost_model = {
-            'credit_price': 2.0,
-            'cortex_model_overrides': {'claude-4-sonnet': 3.0},
-            'storage_price_per_tb_month': 30.0,
-        }
+    def test_calculate_cost_from_effective_rate(self):
         self.assertEqual(
-            calculate_cost({'credits_used': 4}, cost_model), 8.0)
+            calculate_cost({'credits_used': 4, 'effective_rate': 2.0}), 8.0)
         self.assertEqual(
-            calculate_cost(
-                {'credits_used': 2, 'model_name': 'claude-4-sonnet'},
-                cost_model),
-            6.0)
+            calculate_cost({
+                'credits_used_compute': 2,
+                'credits_used_cloud_services': 1,
+                'effective_rate': 3.0,
+                'cloud_services_effective_rate': 1.5,
+            }), 2 * 3.0 + 1 * 1.5)
         # 1 TiB for one day in June (30 days) => 30/30 = 1.0
         self.assertAlmostEqual(
             calculate_cost({
                 'average_bytes': 1024 ** 4,
                 'start_date': datetime(2026, 6, 15, tzinfo=timezone.utc),
-            }, cost_model), 1.0)
+                'effective_rate': 30.0,
+            }), 1.0)
         # 1 TiB for one day in July (31 days) => 30/31
         self.assertAlmostEqual(
             calculate_cost({
                 'average_bytes': 1024 ** 4,
                 'start_date': datetime(2026, 7, 1, tzinfo=timezone.utc),
-            }, cost_model), 30.0 / 31.0)
+                'effective_rate': 30.0,
+            }), 30.0 / 31.0)
+        self.assertEqual(
+            calculate_cost({'bytes_transferred': 1024 ** 4}), 0.0)
         self.assertAlmostEqual(
-            calculate_cost({
-                'bytes_transferred': 1024 ** 4,
-            }, {'transfer_price_per_tb': 10.0}), 10.0)
-        self.assertAlmostEqual(
-            calculate_cost({'billable_amount': 42.5}, cost_model), 42.5)
+            calculate_cost({'billable_amount': 42.5}), 42.5)
+        self.assertEqual(
+            calculate_cost({'credits_used': 5}), 0.0)
 
 
 class TestSnowflakeReconcile(unittest.TestCase):
@@ -320,6 +331,100 @@ class TestSnowflakeConnect(unittest.TestCase):
             "ALTER SESSION SET TIMEZONE = 'UTC'")
         fake_cursor.close.assert_called_once()
 
+    def test_validate_credentials_returns_region(self):
+        from tools.cloud_adapter.clouds.snowflake import Snowflake
+        adapter = Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'w',
+        })
+        fake_conn = MagicMock()
+        fake_cursor = MagicMock()
+        fake_cursor.fetchone.return_value = (
+            'HW44440', 'svc', 'ACCOUNTADMIN', 'COMPUTE_WH', 'AWS_US_EAST_1')
+        fake_conn.cursor.return_value = fake_cursor
+        with patch.object(adapter, 'connect', return_value=fake_conn), \
+                patch.object(adapter, 'close'), \
+                patch.object(adapter, '_probe_view'):
+            result = adapter.validate_credentials()
+        self.assertEqual(result['account_id'], 'HW44440')
+        self.assertEqual(result['region'], 'AWS_US_EAST_1')
+        fake_cursor.execute.assert_any_call(
+            'SELECT CURRENT_ACCOUNT(), CURRENT_USER(), '
+            'CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_REGION()')
+
+    def test_connect_retries_expired_jwt(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            CONNECT_JWT_RETRY_ATTEMPTS, Snowflake)
+        from tools.cloud_adapter.exceptions import CloudConnectionError
+        adapter = Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'w',
+        })
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = MagicMock()
+        jwt_err = Exception(
+            '250001 (08001): Failed to connect to DB: x.snowflakecomputing.com:443. '
+            'JWT token is invalid.')
+        with patch.object(
+                adapter, '_load_private_key_bytes', return_value=b'key'), \
+                patch.dict('sys.modules', {
+                    'snowflake': MagicMock(),
+                    'snowflake.connector': MagicMock(),
+                }), \
+                patch('tools.cloud_adapter.clouds.snowflake.time.sleep') as sleep:
+            import snowflake.connector as sf_connector
+            sf_connector.connect = MagicMock(
+                side_effect=[jwt_err, jwt_err, fake_conn])
+            conn = adapter.connect()
+        self.assertIs(conn, fake_conn)
+        self.assertEqual(sf_connector.connect.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_connect_does_not_retry_non_jwt_errors(self):
+        from tools.cloud_adapter.clouds.snowflake import Snowflake
+        from tools.cloud_adapter.exceptions import CloudConnectionError
+        adapter = Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'w',
+        })
+        with patch.object(
+                adapter, '_load_private_key_bytes', return_value=b'key'), \
+                patch.dict('sys.modules', {
+                    'snowflake': MagicMock(),
+                    'snowflake.connector': MagicMock(),
+                }), \
+                patch('tools.cloud_adapter.clouds.snowflake.time.sleep') as sleep:
+            import snowflake.connector as sf_connector
+            sf_connector.connect = MagicMock(
+                side_effect=Exception('warehouse suspended'))
+            with self.assertRaises(CloudConnectionError):
+                adapter.connect()
+        self.assertEqual(sf_connector.connect.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_connect_exhausted_jwt_retries(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            CONNECT_JWT_RETRY_ATTEMPTS, Snowflake)
+        from tools.cloud_adapter.exceptions import CloudConnectionError
+        adapter = Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'w',
+        })
+        jwt_err = Exception('JWT token is invalid.')
+        with patch.object(
+                adapter, '_load_private_key_bytes', return_value=b'key'), \
+                patch.dict('sys.modules', {
+                    'snowflake': MagicMock(),
+                    'snowflake.connector': MagicMock(),
+                }), \
+                patch('tools.cloud_adapter.clouds.snowflake.time.sleep'):
+            import snowflake.connector as sf_connector
+            sf_connector.connect = MagicMock(side_effect=jwt_err)
+            with self.assertRaises(CloudConnectionError):
+                adapter.connect()
+        self.assertEqual(
+            sf_connector.connect.call_count, CONNECT_JWT_RETRY_ATTEMPTS)
+
 
 class TestWarehouseMeteringCollector(unittest.TestCase):
     def test_fetch_normalizes_rows(self):
@@ -343,6 +448,25 @@ class TestWarehouseMeteringCollector(unittest.TestCase):
         self.assertEqual(rows[0]['resource_id'], 'HW44440/warehouse/11')
         self.assertEqual(rows[0]['credits_used'], 1.5)
         self.assertEqual(rows[0]['service_type'], 'COMPUTE')
+        self.assertIsNone(rows[0].get('region'))
+
+    def test_fetch_includes_region(self):
+        start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        collector = WarehouseMeteringCollector('organization_usage')
+        with patch.object(collector, '_execute', return_value=[{
+            'warehouse_id': 11,
+            'warehouse_name': 'WH',
+            'start_time': start,
+            'end_time': end,
+            'credits_used': 1.5,
+            'credits_used_compute': 1.0,
+            'credits_used_cloud_services': 0.5,
+            'account_locator': 'HW44440',
+            'region': 'AWS_US_EAST_1',
+        }]):
+            rows = list(collector.fetch(MagicMock(), start, end, 'HW44440'))
+        self.assertEqual(rows[0]['region'], 'AWS_US_EAST_1')
 
 
 class TestAutomaticClusteringCollector(unittest.TestCase):
@@ -439,19 +563,50 @@ class TestNoDoubleCounting(unittest.TestCase):
             load_sql, BILLING_SOURCE_ORGANIZATION_USAGE)
         sql = load_sql(
             'metering_daily_history.sql',
-            BILLING_SOURCE_ORGANIZATION_USAGE).upper()
+            BILLING_SOURCE_ORGANIZATION_USAGE)
+        sql_upper = sql.upper()
         for token in (
-                'WAREHOUSE_METERING', 'PIPE', 'SNOWPIPE', 'AI_SERVICES',
-                'AUTO_CLUSTERING', 'DATABASE_STORAGE', 'STAGE', 'CORTEX'):
-            self.assertIn(token, sql)
+                'WAREHOUSE_METERING', 'PIPE', 'SNOWPIPE',
+                'AUTO_CLUSTERING', 'DATABASE_STORAGE', 'STAGE',
+                'REPLICATION'):
+            self.assertIn(token, sql_upper)
+        self.assertIn('RATE_SHEET_DAILY', sql_upper)
+        # Leftovers include AI_INFERENCE and CORTEX_* (priced via rate sheet).
+        # REPLICATION is owned by ListingAutoFulfillmentCollector (currency).
+        not_in = sql_upper.split('NOT IN')[1].split(')')[0]
+        self.assertIn('REPLICATION', not_in)
+        self.assertNotIn('AI_INFERENCE', not_in)
+        self.assertNotIn('AI_SERVICES', not_in)
+        self.assertNotIn("NOT LIKE 'CORTEX", sql_upper)
+        self.assertNotIn('NOT LIKE "CORTEX', sql_upper)
+
+    def test_data_transfer_sql_excludes_listing_replication(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            load_sql, BILLING_SOURCE_ORGANIZATION_USAGE)
+        sql = load_sql(
+            'data_transfer_history.sql',
+            BILLING_SOURCE_ORGANIZATION_USAGE)
+        sql_upper = sql.upper()
+        self.assertIn("TRANSFER_TYPE <> 'REPLICATION'", sql_upper)
+
+    def test_database_storage_sql_skips_listing_storage_days(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            load_sql, BILLING_SOURCE_ORGANIZATION_USAGE)
+        sql = load_sql(
+            'database_storage_usage_history.sql',
+            BILLING_SOURCE_ORGANIZATION_USAGE)
+        sql_upper = sql.upper()
+        self.assertIn('LISTING_AUTO_FULFILLMENT_USAGE_HISTORY', sql_upper)
+        self.assertIn('NOT EXISTS', sql_upper)
+        self.assertIn("SERVICE_TYPE = 'STORAGE'", sql_upper)
 
     def test_calculate_cost_prefers_billable_amount(self):
         record = {
             'billable_amount': 12.5,
             'credits_used': 100,
+            'effective_rate': 3.0,
         }
-        self.assertEqual(
-            calculate_cost(record, {'credit_price': 3.0}), 12.5)
+        self.assertEqual(calculate_cost(record), 12.5)
 
 
 class TestAggregateCollectors(unittest.TestCase):
@@ -485,6 +640,228 @@ class TestAggregateCollectors(unittest.TestCase):
         self.assertEqual(ai['finished_at'], 200)
         self.assertEqual(ai['status'], 'ok')
         self.assertNotIn('source', ai)
+
+
+class TestWarehouseUnavailable(unittest.TestCase):
+    WH_QUOTA_ERR = (
+        "090073 (22000): 01c623b2-000a-88d1-0002-11be0225402e: "
+        "Warehouse 'INFRASTRUCTURE_TEST_WH' cannot be resumed because "
+        "resource monitor 'INFRASTRUCTURE_TEST_RM' has exceeded its quota."
+    )
+
+    def _adapter(self):
+        from tools.cloud_adapter.clouds.snowflake import Snowflake
+        return Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'INFRASTRUCTURE_TEST_WH',
+            'billing_source': 'organization_usage',
+        })
+
+    def test_detects_resource_monitor_quota_error(self):
+        from tools.cloud_adapter.clouds.snowflake import Snowflake
+        self.assertTrue(
+            Snowflake._is_warehouse_unavailable_error(
+                Exception(self.WH_QUOTA_ERR)))
+        self.assertFalse(
+            Snowflake._is_warehouse_unavailable_error(
+                Exception('Object does not exist or not authorized')))
+
+    def test_download_usage_fails_on_warehouse_quota(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            WarehouseMeteringCollector)
+        from tools.cloud_adapter.exceptions import CloudConnectionError
+        adapter = self._adapter()
+        start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 2, tzinfo=timezone.utc)
+        fake_cursor = MagicMock()
+        fake_cursor.fetchone.return_value = ('LOC', 'ADMIN')
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = fake_cursor
+
+        def boom(*_a, **_k):
+            raise Exception(self.WH_QUOTA_ERR)
+
+        with patch.object(adapter, 'connect', return_value=fake_conn), \
+                patch.object(adapter, 'close'), \
+                patch.object(
+                    adapter, '_load_product_map', return_value={}), \
+                patch.object(
+                    adapter, '_load_account_name_map', return_value={}), \
+                patch.object(
+                    adapter, '_collectors',
+                    return_value=[WarehouseMeteringCollector]), \
+                patch.object(
+                    WarehouseMeteringCollector, 'fetch', side_effect=boom):
+            with self.assertRaises(CloudConnectionError) as ctx:
+                list(adapter.download_usage(start, end))
+        self.assertIn('warehouse unavailable', str(ctx.exception).lower())
+        self.assertIn('090073', str(ctx.exception))
+
+    def test_download_usage_fails_over_to_backup_warehouse(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            Snowflake, WarehouseMeteringCollector)
+        adapter = Snowflake({
+            'account': 'a', 'user': 'u', 'private_key': 'k',
+            'warehouse': 'INFRASTRUCTURE_TEST_WH',
+            'backup_warehouse': 'COMPUTE_WH',
+            'billing_source': 'organization_usage',
+        })
+        start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 2, tzinfo=timezone.utc)
+        fake_cursor = MagicMock()
+        fake_cursor.fetchone.return_value = ('LOC', 'ADMIN')
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = fake_cursor
+        calls = {'n': 0}
+
+        def fetch_once(*_a, **_k):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise Exception(self.WH_QUOTA_ERR)
+            return iter([{
+                'service_type': 'COMPUTE',
+                'start_date': start,
+                'credits_used': 1.0,
+                'average_bytes': 0,
+            }])
+
+        with patch.object(adapter, 'connect', return_value=fake_conn), \
+                patch.object(adapter, 'close'), \
+                patch.object(
+                    adapter, '_load_product_map', return_value={}), \
+                patch.object(
+                    adapter, '_load_account_name_map', return_value={}), \
+                patch.object(
+                    adapter, '_reconcile_credits', return_value=[]), \
+                patch.object(
+                    adapter, '_collectors',
+                    return_value=[WarehouseMeteringCollector]), \
+                patch.object(
+                    WarehouseMeteringCollector, 'fetch',
+                    side_effect=fetch_once):
+            rows = list(adapter.download_usage(start, end))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(adapter.warehouse, 'COMPUTE_WH')
+        self.assertTrue(adapter._used_backup_warehouse)
+
+    def test_missing_view_still_soft_fails(self):
+        from tools.cloud_adapter.clouds.snowflake import (
+            WarehouseMeteringCollector)
+        adapter = self._adapter()
+        start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 2, tzinfo=timezone.utc)
+        fake_cursor = MagicMock()
+        fake_cursor.fetchone.return_value = ('LOC', 'ADMIN')
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = fake_cursor
+
+        def missing_view(*_a, **_k):
+            raise Exception('Object does not exist or not authorized')
+
+        with patch.object(adapter, 'connect', return_value=fake_conn), \
+                patch.object(adapter, 'close'), \
+                patch.object(
+                    adapter, '_load_product_map', return_value={}), \
+                patch.object(
+                    adapter, '_load_account_name_map', return_value={}), \
+                patch.object(
+                    adapter, '_collectors',
+                    return_value=[WarehouseMeteringCollector]), \
+                patch.object(
+                    adapter, '_reconcile_credits', return_value=[]), \
+                patch.object(
+                    WarehouseMeteringCollector, 'fetch',
+                    side_effect=missing_view):
+            list(adapter.download_usage(start, end))
+        warnings = adapter.get_import_warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('skipped:', warnings[0])
+
+
+class TestListingAndTransferNaming(unittest.TestCase):
+    def test_listing_auto_fulfillment_name_is_sf_service_type(self):
+        collector = ListingAutoFulfillmentCollector('organization_usage')
+        day = datetime(2026, 7, 1).date()
+        with patch.object(collector, '_execute', return_value=[{
+            'usage_date': day,
+            'account_locator': 'HW44440',
+            'account_name': 'PUBLICIS_PROD',
+            'service_type': 'REPLICATION',
+            'currency': 'USD',
+            'estimated_usage_in_currency': 12.5,
+            'provider_account_locator': 'PROV01',
+        }]):
+            rows = list(collector.fetch(
+                MagicMock(),
+                datetime(2026, 7, 1, tzinfo=timezone.utc),
+                datetime(2026, 7, 2, tzinfo=timezone.utc),
+                'HW44440'))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['service_type'], 'LISTING_AUTO_FULFILLMENT')
+        self.assertEqual(rows[0]['resource_name'], 'REPLICATION')
+        self.assertEqual(rows[0]['sf_service_type'], 'REPLICATION')
+        self.assertEqual(
+            rows[0]['resource_id'],
+            'HW44440/listing_auto_fulfillment/REPLICATION')
+
+    def test_data_transfer_name_is_transfer_type(self):
+        collector = DataTransferCollector('organization_usage')
+        day = datetime(2026, 7, 1).date()
+        with patch.object(collector, '_execute', return_value=[{
+            'start_time': day,
+            'end_time': day,
+            'account_locator': 'HW44440',
+            'account_name': 'PUBLICIS_PROD',
+            'source_region': 'AWS_US_EAST_1',
+            'target_region': 'AWS_EU_WEST_1',
+            'transfer_type': 'EXTERNAL',
+            'bytes_transferred': 1024,
+            'region': 'AWS_US_EAST_1',
+        }]):
+            rows = list(collector.fetch(
+                MagicMock(),
+                datetime(2026, 7, 1, tzinfo=timezone.utc),
+                datetime(2026, 7, 2, tzinfo=timezone.utc),
+                'HW44440'))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['service_type'], 'DATA_TRANSFER')
+        self.assertEqual(rows[0]['resource_name'], 'EXTERNAL')
+        self.assertEqual(rows[0]['region'], 'AWS_US_EAST_1')
+        # Regions stay in id so same transfer_type cannot collide.
+        self.assertIn('AWS_US_EAST_1/AWS_EU_WEST_1/EXTERNAL/',
+                      rows[0]['resource_id'])
+
+    def test_data_transfer_same_type_different_regions_keep_distinct_ids(self):
+        collector = DataTransferCollector('organization_usage')
+        day = datetime(2026, 7, 1).date()
+        with patch.object(collector, '_execute', return_value=[
+            {
+                'start_time': day,
+                'end_time': day,
+                'account_locator': 'HW44440',
+                'source_region': 'AWS_US_EAST_1',
+                'target_region': 'AWS_EU_WEST_1',
+                'transfer_type': 'EXTERNAL',
+                'bytes_transferred': 1,
+            },
+            {
+                'start_time': day,
+                'end_time': day,
+                'account_locator': 'HW44440',
+                'source_region': 'AWS_US_WEST_2',
+                'target_region': 'AWS_EU_CENTRAL_1',
+                'transfer_type': 'EXTERNAL',
+                'bytes_transferred': 2,
+            },
+        ]):
+            rows = list(collector.fetch(
+                MagicMock(),
+                datetime(2026, 7, 1, tzinfo=timezone.utc),
+                datetime(2026, 7, 2, tzinfo=timezone.utc),
+                'HW44440'))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r['resource_name'] for r in rows}, {'EXTERNAL'})
+        self.assertEqual(len({r['resource_id'] for r in rows}), 2)
 
 
 if __name__ == '__main__':

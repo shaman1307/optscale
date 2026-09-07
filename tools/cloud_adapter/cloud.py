@@ -11,6 +11,7 @@ from tools.cloud_adapter.clouds.gcp_tenant import GcpTenant
 from tools.cloud_adapter.clouds.nebius import Nebius
 from tools.cloud_adapter.clouds.databricks import Databricks
 from tools.cloud_adapter.clouds.snowflake import Snowflake
+from tools.cloud_adapter.clouds.snowflake_tenant import SnowflakeTenant
 
 
 SUPPORTED_BILLING_TYPES = {
@@ -25,6 +26,7 @@ SUPPORTED_BILLING_TYPES = {
     'nebius': Nebius,
     'databricks': Databricks,
     'snowflake': Snowflake,
+    'snowflake_tenant': SnowflakeTenant,
 }
 
 

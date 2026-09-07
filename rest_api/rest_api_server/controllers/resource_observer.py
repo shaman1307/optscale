@@ -26,6 +26,15 @@ LOG = logging.getLogger(__name__)
 BULK_SIZE = 2000
 NEWLY_DISCOVERED_TIME = 300  # 5 min
 HOUR_IN_SEC = 3600
+# Minimum gap between tenant children-list calls to cloud APIs.
+CHILDREN_SYNC_INTERVAL = 5 * 60
+# Snowflake tenant child sync talks to Snowflake (list accounts). Keep rare.
+SNOWFLAKE_CHILDREN_SYNC_INTERVAL = 3 * HOUR_IN_SEC
+TENANT_CHILDREN_SYNC_INTERVALS = {
+    CloudTypes.SNOWFLAKE_TENANT: SNOWFLAKE_CHILDREN_SYNC_INTERVAL,
+    CloudTypes.GCP_TENANT: CHILDREN_SYNC_INTERVAL,
+    CloudTypes.AZURE_TENANT: CHILDREN_SYNC_INTERVAL,
+}
 
 
 class ResourceObserverController(BaseController, MongoMixin):
@@ -41,6 +50,29 @@ class ResourceObserverController(BaseController, MongoMixin):
             CloudAccount.organization_id == organization_id,
             CloudAccount.deleted.is_(False)
         ).all()
+
+    @staticmethod
+    def _children_sync_interval(cloud_account):
+        return TENANT_CHILDREN_SYNC_INTERVALS.get(
+            cloud_account.type, CHILDREN_SYNC_INTERVAL)
+
+    @staticmethod
+    def _should_sync_children(cloud_account):
+        cfg = cloud_account.decoded_config or {}
+        last_sync = int(cfg.get('last_children_sync_at') or 0)
+        interval = ResourceObserverController._children_sync_interval(
+            cloud_account)
+        return (opttime.utcnow_timestamp() - last_sync) >= interval
+
+    def _mark_children_synced(self, cloud_account):
+        from rest_api.rest_api_server.utils import encode_config
+        # Refresh from DB — create_children_accounts may have mutated config.
+        self.session.refresh(cloud_account)
+        cfg = dict(cloud_account.decoded_config or {})
+        cfg['last_children_sync_at'] = opttime.utcnow_timestamp()
+        cloud_account.config = encode_config(cfg)
+        self.session.add(cloud_account)
+        self.session.commit()
 
     def _clear_active_flags(self, cloud_acc_id_discovered_res_ids, resource_type):
         resources_ = {}
@@ -85,12 +117,21 @@ class ResourceObserverController(BaseController, MongoMixin):
         cloud_accounts_map = {}
         for cloud_account in self._get_cloud_accounts(organization_id):
             if cloud_account.type in [
-                CloudTypes.AZURE_TENANT, CloudTypes.GCP_TENANT
+                CloudTypes.AZURE_TENANT, CloudTypes.GCP_TENANT,
+                CloudTypes.SNOWFLAKE_TENANT,
             ]:
                 try:
+                    if not self._should_sync_children(cloud_account):
+                        LOG.info(
+                            'Skip %s children sync for %s (interval %ss)',
+                            cloud_account.type.value,
+                            cloud_account.id,
+                            self._children_sync_interval(cloud_account))
+                        continue
                     CloudAccountController(
                         self.session, self._config, self.token
                     ).create_children_accounts(cloud_account)
+                    self._mark_children_synced(cloud_account)
                 except Exception as exc:
                     LOG.error(f'Error creating children accounts for cloud '
                               f'account {cloud_account.id}: {str(exc)}')
